@@ -25,6 +25,7 @@ public final class TriviaClientMain {
         ServerDiscoveryListener discoveryListener = new ServerDiscoveryListener();
         StatsApiClient statsApiClient = new StatsApiClient();
 
+        // Best-effort: UI still opens if multicast discovery is unavailable
         discoveryListener.start();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -35,6 +36,9 @@ public final class TriviaClientMain {
         SwingUtilities.invokeLater(() -> {
             LobbyFrame lobby = new LobbyFrame(tcpClient, discoveryListener, statsApiClient);
             lobby.setVisible(true);
+            if (!discoveryListener.isActive()) {
+                LOG.warning("UDP discovery inactive — connect with 127.0.0.1:5000");
+            }
             LOG.info("Trivia Hub client UI started");
         });
     }

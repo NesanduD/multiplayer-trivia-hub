@@ -4,11 +4,11 @@ import trivia.shared.discovery.DiscoveryMessage;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
+import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.MulticastSocket;
 import java.net.NetworkInterface;
-import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -24,6 +24,7 @@ import java.util.logging.Logger;
 
 /**
  * Joins the UDP multicast group and listens for SERVER_ANNOUNCE beacons (Member 02).
+ * Discovery is best-effort: failure to join multicast must not block the UI.
  */
 public class ServerDiscoveryListener implements AutoCloseable, Runnable {
     private static final Logger LOG = Logger.getLogger(ServerDiscoveryListener.class.getName());
@@ -37,44 +38,75 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
     private MulticastSocket socket;
     private InetAddress group;
     private Thread thread;
+    private boolean active;
 
     public void addListener(Consumer<List<DiscoveryMessage>> listener) {
         listeners.add(listener);
     }
 
-    public void start() throws IOException {
-        group = InetAddress.getByName(DiscoveryMessage.MULTICAST_GROUP);
-        socket = new MulticastSocket(DiscoveryMessage.MULTICAST_PORT);
-        socket.setReuseAddress(true);
-        joinAllInterfaces();
-        running.set(true);
-        thread = new Thread(this, "server-discovery");
-        thread.setDaemon(true);
-        thread.start();
-        LOG.info(() -> "Listening for UDP discovery on "
-                + DiscoveryMessage.MULTICAST_GROUP + ":" + DiscoveryMessage.MULTICAST_PORT);
+    public boolean isActive() {
+        return active;
     }
 
-    private void joinAllInterfaces() throws IOException {
+    public void start() {
+        try {
+            group = InetAddress.getByName(DiscoveryMessage.MULTICAST_GROUP);
+            socket = new MulticastSocket(DiscoveryMessage.MULTICAST_PORT);
+            socket.setReuseAddress(true);
+            boolean joined = joinAllInterfaces();
+            if (!joined) {
+                LOG.warning("Could not join multicast group on any interface. "
+                        + "Use host 127.0.0.1 and port 5000 to connect manually.");
+                closeSocketQuietly();
+                active = false;
+                return;
+            }
+            running.set(true);
+            active = true;
+            thread = new Thread(this, "server-discovery");
+            thread.setDaemon(true);
+            thread.start();
+            LOG.info(() -> "Listening for UDP discovery on "
+                    + DiscoveryMessage.MULTICAST_GROUP + ":" + DiscoveryMessage.MULTICAST_PORT);
+        } catch (Exception ex) {
+            LOG.log(Level.WARNING, "UDP discovery unavailable; connect manually via host/port", ex);
+            closeSocketQuietly();
+            active = false;
+        }
+    }
+
+    private boolean joinAllInterfaces() {
         boolean joined = false;
-        Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-        while (interfaces.hasMoreElements()) {
-            NetworkInterface nif = interfaces.nextElement();
-            try {
-                if (!nif.isUp() || nif.isLoopback() || !nif.supportsMulticast()) {
-                    continue;
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface nif = interfaces.nextElement();
+                try {
+                    if (!nif.isUp() || nif.isLoopback() || !nif.supportsMulticast() || !hasIpv4(nif)) {
+                        continue;
+                    }
+                    socket.joinGroup(new InetSocketAddress(group, DiscoveryMessage.MULTICAST_PORT), nif);
+                    joinedInterfaces.add(nif);
+                    joined = true;
+                    LOG.info(() -> "Joined multicast on interface " + nif.getName());
+                } catch (Exception ex) {
+                    LOG.fine(() -> "Skip interface " + nif.getName() + ": " + ex.getMessage());
                 }
-                socket.joinGroup(new InetSocketAddress(group, DiscoveryMessage.MULTICAST_PORT), nif);
-                joinedInterfaces.add(nif);
-                joined = true;
-            } catch (SocketException | IllegalArgumentException ex) {
-                LOG.fine(() -> "Skip interface " + nif.getName() + ": " + ex.getMessage());
+            }
+        } catch (Exception ex) {
+            LOG.log(Level.FINE, "Failed enumerating network interfaces", ex);
+        }
+        return joined;
+    }
+
+    private static boolean hasIpv4(NetworkInterface nif) {
+        Enumeration<InetAddress> addresses = nif.getInetAddresses();
+        while (addresses.hasMoreElements()) {
+            if (addresses.nextElement() instanceof Inet4Address) {
+                return true;
             }
         }
-        if (!joined) {
-            // Last-resort deprecated join for constrained environments
-            socket.joinGroup(group);
-        }
+        return false;
     }
 
     @Override
@@ -120,9 +152,21 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
         }
     }
 
+    private void closeSocketQuietly() {
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (Exception ignored) {
+                // ignore
+            }
+            socket = null;
+        }
+    }
+
     @Override
     public void close() {
         running.set(false);
+        active = false;
         if (socket != null) {
             for (NetworkInterface nif : joinedInterfaces) {
                 try {
@@ -131,7 +175,7 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
                     // ignore leave failures
                 }
             }
-            socket.close();
+            closeSocketQuietly();
         }
         if (thread != null) {
             thread.interrupt();
