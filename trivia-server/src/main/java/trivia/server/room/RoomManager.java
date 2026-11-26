@@ -1,7 +1,7 @@
 package trivia.server.room;
 
 import trivia.server.game.QuestionBank;
-import trivia.server.nio.ClientSessionImpl;
+import trivia.shared.api.ClientSession;
 import trivia.shared.api.MatchStatsPublisher;
 import trivia.shared.protocol.Message;
 import trivia.shared.protocol.MessageType;
@@ -23,7 +23,7 @@ public class RoomManager {
     private static final Logger LOG = Logger.getLogger(RoomManager.class.getName());
 
     private final Map<String, GameRoom> rooms = new ConcurrentHashMap<>();
-    private final Map<String, ClientSessionImpl> sessionsByPlayer = new ConcurrentHashMap<>();
+    private final Map<String, ClientSession> sessionsByPlayer = new ConcurrentHashMap<>();
     private final QuestionBank questionBank = new QuestionBank();
     private final ExecutorService roomExecutor = Executors.newFixedThreadPool(8, r -> {
         Thread t = new Thread(r, "room-worker");
@@ -41,13 +41,13 @@ public class RoomManager {
         this.statsPublisher = statsPublisher;
     }
 
-    public void registerSession(ClientSessionImpl session) {
+    public void registerSession(ClientSession session) {
         if (session.getPlayerId() != null) {
             sessionsByPlayer.put(session.getPlayerId(), session);
         }
     }
 
-    public void handle(ClientSessionImpl session, Message message) {
+    public void handle(ClientSession session, Message message) {
         try {
             switch (message.getType()) {
                 case HELLO -> handleHello(session, message);
@@ -67,7 +67,7 @@ public class RoomManager {
         }
     }
 
-    public void handleDisconnect(ClientSessionImpl session, String reason) {
+    public void handleDisconnect(ClientSession session, String reason) {
         if (session.getPlayerId() != null) {
             sessionsByPlayer.remove(session.getPlayerId());
         }
@@ -97,7 +97,7 @@ public class RoomManager {
         scheduler.shutdownNow();
     }
 
-    private void handleHello(ClientSessionImpl session, Message message) {
+    private void handleHello(ClientSession session, Message message) {
         if (session.getPlayerId() != null) {
             session.send(Message.error("Already registered"));
             return;
@@ -121,7 +121,7 @@ public class RoomManager {
         LOG.info(() -> "Player connected: " + session.getPlayerName() + " (" + playerId + ")");
     }
 
-    private void handleCreateRoom(ClientSessionImpl session, Message message) {
+    private void handleCreateRoom(ClientSession session, Message message) {
         requireRegistered(session);
         if (session.getRoomId() != null) {
             session.send(Message.error("Leave current room first"));
@@ -148,7 +148,7 @@ public class RoomManager {
         broadcastRoomList();
     }
 
-    private void handleJoinRoom(ClientSessionImpl session, Message message) {
+    private void handleJoinRoom(ClientSession session, Message message) {
         requireRegistered(session);
         if (session.getRoomId() != null) {
             session.send(Message.error("Leave current room first"));
@@ -167,7 +167,7 @@ public class RoomManager {
         broadcastRoomList();
     }
 
-    private void handleLeaveRoom(ClientSessionImpl session) {
+    private void handleLeaveRoom(ClientSession session) {
         requireRegistered(session);
         String roomId = session.getRoomId();
         if (roomId == null) {
@@ -185,7 +185,7 @@ public class RoomManager {
         broadcastRoomList();
     }
 
-    private void handleStartGame(ClientSessionImpl session, Message message) {
+    private void handleStartGame(ClientSession session, Message message) {
         requireRegistered(session);
         GameRoom room = rooms.get(message.getRoomId() != null ? message.getRoomId() : session.getRoomId());
         if (room == null) {
@@ -195,7 +195,7 @@ public class RoomManager {
         room.startGame(session.getPlayerId());
     }
 
-    private void handleAnswer(ClientSessionImpl session, Message message) {
+    private void handleAnswer(ClientSession session, Message message) {
         requireRegistered(session);
         GameRoom room = rooms.get(session.getRoomId());
         if (room == null) {
@@ -205,7 +205,7 @@ public class RoomManager {
         room.handleAnswer(session, message);
     }
 
-    private void handleChat(ClientSessionImpl session, Message message) {
+    private void handleChat(ClientSession session, Message message) {
         requireRegistered(session);
         GameRoom room = rooms.get(session.getRoomId());
         if (room == null) {
@@ -215,13 +215,13 @@ public class RoomManager {
         room.handleChat(session, message);
     }
 
-    private void sendRoomList(ClientSessionImpl session) {
+    private void sendRoomList(ClientSession session) {
         session.send(roomListMessage());
     }
 
     private void broadcastRoomList() {
         Message list = roomListMessage();
-        for (ClientSessionImpl session : sessionsByPlayer.values()) {
+        for (ClientSession session : sessionsByPlayer.values()) {
             if (session.getRoomId() == null) {
                 session.send(list);
             }
@@ -240,7 +240,7 @@ public class RoomManager {
         return list;
     }
 
-    private void requireRegistered(ClientSessionImpl session) {
+    private void requireRegistered(ClientSession session) {
         if (session.getPlayerId() == null) {
             throw new IllegalStateException("Send HELLO first");
         }

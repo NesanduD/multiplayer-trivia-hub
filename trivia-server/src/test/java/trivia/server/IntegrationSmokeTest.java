@@ -54,8 +54,10 @@ class IntegrationSmokeTest {
     @Test
     void helloCreateRoomAndHttpLeaderboard() throws Exception {
         Path store = Files.createTempFile("trivia-stats-", ".json");
-        httpStatsServer = new HttpStatsServer(18080, store);
+        java.util.concurrent.atomic.AtomicReference<RoomManager> ref = new java.util.concurrent.atomic.AtomicReference<>();
+        httpStatsServer = new HttpStatsServer(18080, store, 15000, 15001, "Test", ref::get);
         roomManager = new RoomManager(httpStatsServer);
+        ref.set(roomManager);
         nioGameServer = new NioGameServer(15000, roomManager);
         httpStatsServer.start();
 

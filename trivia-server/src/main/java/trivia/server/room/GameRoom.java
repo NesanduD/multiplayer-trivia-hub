@@ -3,7 +3,7 @@ package trivia.server.room;
 import trivia.server.game.QuestionBank;
 import trivia.server.game.QuestionTimer;
 import trivia.server.game.ScoreBoard;
-import trivia.server.nio.ClientSessionImpl;
+import trivia.shared.api.ClientSession;
 import trivia.shared.api.MatchStatsPublisher;
 import trivia.shared.dto.MatchResult;
 import trivia.shared.model.Question;
@@ -33,7 +33,7 @@ public class GameRoom {
     private final String roomName;
     private final int maxPlayers;
     private final String hostPlayerId;
-    private final Map<String, ClientSessionImpl> players = new ConcurrentHashMap<>();
+    private final Map<String, ClientSession> players = new ConcurrentHashMap<>();
     private final ScoreBoard scoreBoard = new ScoreBoard();
     private final QuestionBank questionBank;
     private final ExecutorService roomExecutor;
@@ -91,7 +91,7 @@ public class GameRoom {
         return players.containsKey(playerId);
     }
 
-    public boolean addPlayer(ClientSessionImpl session) {
+    public boolean addPlayer(ClientSession session) {
         synchronized (lock) {
             if (!"WAITING".equals(status)) {
                 return false;
@@ -109,7 +109,7 @@ public class GameRoom {
 
     public void removePlayer(String playerId, String reason) {
         synchronized (lock) {
-            ClientSessionImpl removed = players.remove(playerId);
+            ClientSession removed = players.remove(playerId);
             if (removed == null) {
                 return;
             }
@@ -153,7 +153,7 @@ public class GameRoom {
         }
     }
 
-    public void handleAnswer(ClientSessionImpl session, Message message) {
+    public void handleAnswer(ClientSession session, Message message) {
         synchronized (lock) {
             if (!"PLAYING".equals(status)) {
                 return;
@@ -193,7 +193,7 @@ public class GameRoom {
         }
     }
 
-    public void handleChat(ClientSessionImpl session, Message message) {
+    public void handleChat(ClientSession session, Message message) {
         Message chat = Message.of(MessageType.CHAT);
         chat.setRoomId(roomId);
         chat.setFrom(session.getPlayerName());
@@ -208,7 +208,7 @@ public class GameRoom {
         state.setStatus(status);
         state.setMaxPlayers(maxPlayers);
         List<String> names = new ArrayList<>();
-        for (ClientSessionImpl session : players.values()) {
+        for (ClientSession session : players.values()) {
             names.add(session.getPlayerName());
         }
         state.setPlayers(names);
@@ -291,7 +291,7 @@ public class GameRoom {
         for (ScoreEntry entry : scoreBoard.snapshot()) {
             scoreBoard.remove(entry.getPlayerId());
         }
-        for (ClientSessionImpl session : players.values()) {
+        for (ClientSession session : players.values()) {
             scoreBoard.register(session.getPlayerId(), session.getPlayerName());
         }
         broadcastRoomState();
@@ -316,13 +316,13 @@ public class GameRoom {
     }
 
     private void broadcast(Message message) {
-        for (ClientSessionImpl session : players.values()) {
+        for (ClientSession session : players.values()) {
             session.send(message);
         }
     }
 
     private void sendError(String playerId, String error) {
-        ClientSessionImpl session = players.get(playerId);
+        ClientSession session = players.get(playerId);
         if (session != null) {
             session.send(Message.error(error));
         }
