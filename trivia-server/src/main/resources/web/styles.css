@@ -374,16 +374,17 @@ input[type="text"]:focus {
   background: rgba(255,107,122,0.14);
   animation: shake 0.35s ease;
 }
-.answer-row {
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
 .feedback {
   min-height: 1.3rem;
-  margin: 0;
+  margin: 0.85rem 0 0;
   font-weight: 700;
+}
+.option:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+.option.selected:disabled {
+  opacity: 1;
 }
 .feedback.ok { color: var(--ok); animation: popIn 0.3s ease; }
 .feedback.bad { color: var(--danger); animation: shake 0.3s ease; }

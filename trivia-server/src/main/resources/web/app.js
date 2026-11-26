@@ -35,7 +35,6 @@
     questionText: $("questionText"),
     questionMeta: $("questionMeta"),
     options: $("options"),
-    submitBtn: $("submitBtn"),
     answerFeedback: $("answerFeedback"),
     scoreList: $("scoreList"),
     chatLog: $("chatLog"),
@@ -382,7 +381,7 @@
         renderScores(msg.scores || []);
         els.answerFeedback.textContent = "Round over!";
         els.answerFeedback.className = "feedback ok";
-        els.submitBtn.disabled = true;
+        lockOptions();
         els.startBtn.disabled = false;
         els.questionMeta.textContent = "Nice game — start again anytime";
         celebrate();
@@ -488,6 +487,23 @@
     });
   }
 
+  function lockOptions() {
+    [...els.options.children].forEach((btn) => {
+      btn.disabled = true;
+    });
+  }
+
+  function submitAnswer(optionIndex) {
+    if (selectedOption != null || optionIndex == null) return;
+    selectedOption = optionIndex;
+    const chosen = els.options.children[optionIndex];
+    if (chosen) chosen.classList.add("selected");
+    lockOptions();
+    els.answerFeedback.textContent = "Answer locked";
+    els.answerFeedback.className = "feedback";
+    send({ type: "ANSWER", roomId: currentRoomId, qIndex: currentQIndex, optionIndex });
+  }
+
   function showQuestion(msg) {
     currentQIndex = msg.qIndex;
     selectedOption = null;
@@ -499,9 +515,8 @@
     els.questionText.classList.remove("animate-in");
     void els.questionText.offsetWidth;
     els.questionText.classList.add("animate-in");
-    els.answerFeedback.textContent = "";
+    els.answerFeedback.textContent = "Tap an answer to lock it in";
     els.answerFeedback.className = "feedback";
-    els.submitBtn.disabled = false;
     els.startBtn.disabled = true;
     els.options.innerHTML = "";
     (msg.options || []).forEach((opt, i) => {
@@ -510,11 +525,7 @@
       btn.textContent = `${String.fromCharCode(65 + i)}. ${opt}`;
       btn.style.animationDelay = `${i * 0.05}s`;
       btn.classList.add("animate-in");
-      btn.onclick = () => {
-        selectedOption = i;
-        [...els.options.children].forEach((c) => c.classList.remove("selected"));
-        btn.classList.add("selected");
-      };
+      btn.onclick = () => submitAnswer(i);
       els.options.appendChild(btn);
     });
     clearInterval(timerHandle);
@@ -538,7 +549,7 @@
     const urgent = remaining <= 5000;
     els.timer.classList.toggle("urgent", urgent);
     els.timerBar.classList.toggle("urgent", urgent);
-    if (remaining === 0) els.submitBtn.disabled = true;
+    if (remaining === 0) lockOptions();
   }
 
   function renderScores(scores) {
@@ -603,14 +614,6 @@
     } catch (_) {
       toast(currentRoomId);
     }
-  };
-  els.submitBtn.onclick = () => {
-    if (selectedOption == null) {
-      toast("Pick an answer first", true);
-      return;
-    }
-    send({ type: "ANSWER", roomId: currentRoomId, qIndex: currentQIndex, optionIndex: selectedOption });
-    els.submitBtn.disabled = true;
   };
   els.chatSendBtn.onclick = () => {
     const text = els.chatInput.value.trim();
