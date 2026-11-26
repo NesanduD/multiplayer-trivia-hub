@@ -2,6 +2,10 @@ package trivia.shared.discovery;
 
 import trivia.shared.protocol.ProtocolCodec;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 /**
  * UDP multicast beacon payload (one datagram = one JSON message).
  */
@@ -17,6 +21,7 @@ public class DiscoveryMessage {
     private int httpPort;
     private int players;
     private int rooms;
+    private List<Map<String, Object>> roomSummaries = new ArrayList<>();
     private long timestamp;
 
     public DiscoveryMessage() {
@@ -98,6 +103,14 @@ public class DiscoveryMessage {
 
     public void setRooms(int rooms) {
         this.rooms = rooms;
+    }
+
+    public List<Map<String, Object>> getRoomSummaries() {
+        return roomSummaries;
+    }
+
+    public void setRoomSummaries(List<Map<String, Object>> roomSummaries) {
+        this.roomSummaries = roomSummaries != null ? roomSummaries : new ArrayList<>();
     }
 
     public long getTimestamp() {
