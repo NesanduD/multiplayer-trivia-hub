@@ -1,4 +1,4 @@
-package com.trivia.shared;
+package trivia.shared;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
