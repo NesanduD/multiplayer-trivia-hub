@@ -4,5 +4,6 @@ public enum ConnectionState {
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
-    REGISTERED
+    REGISTERED,
+    RECONNECTING
 }

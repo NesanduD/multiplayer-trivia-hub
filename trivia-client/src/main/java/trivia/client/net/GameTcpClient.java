@@ -15,6 +15,7 @@ import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -26,11 +27,12 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Traditional blocking TCP Socket client (Member 01).
- * Demonstrates connection establishment, framed I/O, heartbeat, and session resume.
+ * Traditional blocking TCP Socket client (Member 04).
+ * Demonstrates connection establishment, framed I/O, heartbeat monitoring, and session resume.
  */
 public class GameTcpClient implements AutoCloseable {
     private static final Logger LOG = Logger.getLogger(GameTcpClient.class.getName());
+    private static final int MAX_RECONNECT_ATTEMPTS = 3;
 
     private final CopyOnWriteArrayList<Consumer<Message>> listeners = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<Consumer<String>> errorListeners = new CopyOnWriteArrayList<>();
@@ -42,19 +44,31 @@ public class GameTcpClient implements AutoCloseable {
         t.setDaemon(true);
         return t;
     });
+    private final ExecutorService reconnectExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "tcp-client-reconnect");
+        t.setDaemon(true);
+        return t;
+    });
 
     private Socket socket;
     private OutputStream out;
     private InputStream in;
     private Thread readerThread;
-    private String playerId;
-    private String playerName;
-    private String sessionToken;
-    private long heartbeatIntervalMs = 5000;
+    private volatile String playerId;
+    private volatile String playerName;
+    private volatile String sessionToken;
+    private volatile String currentRoomId;
+    private volatile long heartbeatIntervalMs = 5000;
+    private volatile long heartbeatTimeoutMs = 20000;
+    private volatile long lastInboundMs;
+    private volatile boolean autoReconnect = true;
+    private volatile long reconnectBaseDelayMs = 500;
+    private volatile boolean intentionalDisconnect;
+    private volatile boolean closed;
     private ScheduledFuture<?> heartbeatFuture;
     private final String clientId = UUID.randomUUID().toString();
-    private String lastHost;
-    private int lastPort;
+    private volatile String lastHost;
+    private volatile int lastPort;
 
     public void addMessageListener(Consumer<Message> listener) {
         listeners.add(listener);
@@ -84,8 +98,27 @@ public class GameTcpClient implements AutoCloseable {
         return sessionToken;
     }
 
+    public String getCurrentRoomId() {
+        return currentRoomId;
+    }
+
+    public long getLastInboundMs() {
+        return lastInboundMs;
+    }
+
+    public void setAutoReconnect(boolean autoReconnect) {
+        this.autoReconnect = autoReconnect;
+    }
+
+    public void setReconnectBaseDelayMs(long reconnectBaseDelayMs) {
+        this.reconnectBaseDelayMs = Math.max(50L, reconnectBaseDelayMs);
+    }
+
     public synchronized void connect(String host, int port, String playerName) throws IOException {
-        connectInternal(host, port, playerName, false);
+        if (playerName == null || playerName.isBlank()) {
+            throw new IllegalArgumentException("Player name is required");
+        }
+        connectInternal(host, port, playerName.trim(), false);
     }
 
     /**
@@ -99,23 +132,35 @@ public class GameTcpClient implements AutoCloseable {
     }
 
     private void connectInternal(String host, int port, String playerName, boolean resume) throws IOException {
-        if (state.get() != ConnectionState.DISCONNECTED) {
+        if (closed) {
+            throw new IllegalStateException("Client has been permanently closed");
+        }
+        if (host == null || host.isBlank()) {
+            throw new IllegalArgumentException("Server host is required");
+        }
+        if (port <= 0 || port > 65535) {
+            throw new IllegalArgumentException("Port must be between 1 and 65535");
+        }
+        if (state.get() != ConnectionState.DISCONNECTED && state.get() != ConnectionState.RECONNECTING) {
             closeSocketOnly(false);
         }
+        intentionalDisconnect = false;
         setState(ConnectionState.CONNECTING);
         this.playerName = playerName;
-        this.lastHost = host;
+        this.lastHost = host.trim();
         this.lastPort = port;
         if (!resume) {
             this.playerId = null;
+            this.currentRoomId = null;
         }
         try {
             socket = new Socket();
-            socket.connect(new InetSocketAddress(host, port), 5000);
+            socket.connect(new InetSocketAddress(this.lastHost, port), 5000);
             socket.setTcpNoDelay(true);
             socket.setSoTimeout(0);
             out = new BufferedOutputStream(socket.getOutputStream());
             in = new BufferedInputStream(socket.getInputStream());
+            lastInboundMs = System.currentTimeMillis();
             setState(ConnectionState.CONNECTED);
 
             if (resume) {
@@ -154,19 +199,23 @@ public class GameTcpClient implements AutoCloseable {
 
     public void createRoom(String roomName, int maxPlayers) throws IOException {
         Message message = Message.of(MessageType.CREATE_ROOM);
-        message.setRoomName(roomName);
+        message.setRoomName(roomName == null ? "" : roomName.trim());
         message.setMaxPlayers(maxPlayers);
         send(message);
     }
 
     public void joinRoom(String roomId) throws IOException {
+        if (roomId == null || roomId.isBlank()) {
+            throw new IllegalArgumentException("Room ID is required");
+        }
         Message message = Message.of(MessageType.JOIN_ROOM);
-        message.setRoomId(roomId);
+        message.setRoomId(roomId.trim());
         send(message);
     }
 
     public void leaveRoom() throws IOException {
         send(Message.of(MessageType.LEAVE_ROOM));
+        currentRoomId = null;
     }
 
     public void listRooms() throws IOException {
@@ -174,20 +223,34 @@ public class GameTcpClient implements AutoCloseable {
     }
 
     public void startGame(String roomId) throws IOException {
+        String targetRoom = (roomId == null || roomId.isBlank()) ? currentRoomId : roomId.trim();
+        if (targetRoom == null || targetRoom.isBlank()) {
+            throw new IllegalArgumentException("Room ID is required to start game");
+        }
         Message message = Message.of(MessageType.START_GAME);
-        message.setRoomId(roomId);
+        message.setRoomId(targetRoom);
         send(message);
     }
 
     public void answer(String roomId, int qIndex, int optionIndex) throws IOException {
+        String targetRoom = (roomId == null || roomId.isBlank()) ? currentRoomId : roomId.trim();
+        if (targetRoom == null || targetRoom.isBlank()) {
+            throw new IllegalArgumentException("Room ID is required to submit answer");
+        }
+        if (optionIndex < 0) {
+            throw new IllegalArgumentException("Option index must be non-negative");
+        }
         Message message = Message.of(MessageType.ANSWER);
-        message.setRoomId(roomId);
+        message.setRoomId(targetRoom);
         message.setQIndex(qIndex);
         message.setOptionIndex(optionIndex);
         send(message);
     }
 
     public void chat(String text) throws IOException {
+        if (text == null || text.isBlank()) {
+            throw new IllegalArgumentException("Chat message cannot be empty");
+        }
         Message message = Message.of(MessageType.CHAT);
         message.setText(text);
         send(message);
@@ -195,11 +258,23 @@ public class GameTcpClient implements AutoCloseable {
 
     private void startHeartbeat() {
         stopHeartbeat();
+        if (heartbeatScheduler.isShutdown()) {
+            return;
+        }
         long interval = Math.max(500L, heartbeatIntervalMs);
         heartbeatFuture = heartbeatScheduler.scheduleAtFixedRate(() -> {
+            if (state.get() != ConnectionState.REGISTERED) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            if (lastInboundMs > 0 && now - lastInboundMs > heartbeatTimeoutMs) {
+                LOG.warning("Server heartbeat timeout detected; closing stale socket");
+                closeSocketOnly(false);
+                return;
+            }
             try {
                 Message ping = Message.of(MessageType.PING);
-                ping.setServerTime(System.currentTimeMillis());
+                ping.setServerTime(now);
                 send(ping);
             } catch (IOException ex) {
                 LOG.fine(() -> "Heartbeat send failed: " + ex.getMessage());
@@ -215,14 +290,18 @@ public class GameTcpClient implements AutoCloseable {
     }
 
     private void readLoop() {
+        boolean unexpectedDrop = false;
         try {
             while (readerRunning.get() && socket != null && !socket.isClosed()) {
                 Message message = ProtocolCodec.readFrame(in);
                 if (message == null) {
+                    unexpectedDrop = !intentionalDisconnect && !closed;
                     break;
                 }
+                lastInboundMs = System.currentTimeMillis();
                 if (message.getType() == MessageType.WELCOME) {
                     playerId = message.getPlayerId();
+                    currentRoomId = message.getRoomId();
                     if (message.getSessionToken() != null && !message.getSessionToken().isBlank()) {
                         sessionToken = message.getSessionToken();
                     } else if (message.getExtra() != null && message.getExtra().get("sessionToken") != null) {
@@ -232,25 +311,95 @@ public class GameTcpClient implements AutoCloseable {
                     if (interval instanceof Number number) {
                         heartbeatIntervalMs = number.longValue();
                     }
+                    Object timeout = message.getExtra() != null ? message.getExtra().get("heartbeatTimeoutMs") : null;
+                    if (timeout instanceof Number number) {
+                        heartbeatTimeoutMs = number.longValue();
+                    } else {
+                        heartbeatTimeoutMs = Math.max(3000L, heartbeatIntervalMs * 3);
+                    }
                     setState(ConnectionState.REGISTERED);
                     startHeartbeat();
+                } else if (message.getType() == MessageType.ROOM_CREATED || message.getType() == MessageType.ROOM_STATE) {
+                    if (message.getRoomId() != null) {
+                        currentRoomId = message.getRoomId();
+                    }
+                } else if (message.getType() == MessageType.PLAYER_LEFT) {
+                    if (playerId != null && playerId.equals(message.getPlayerId())) {
+                        currentRoomId = null;
+                    }
+                } else if (message.getType() == MessageType.ERROR && state.get() != ConnectionState.REGISTERED) {
+                    sessionToken = null;
                 }
                 for (Consumer<Message> listener : listeners) {
                     listener.accept(message);
                 }
             }
         } catch (SocketTimeoutException ex) {
-            notifyError("Socket timed out: " + ex.getMessage());
+            unexpectedDrop = !intentionalDisconnect && !closed;
+            if (!shouldAutoReconnect()) {
+                notifyError("Socket timed out: " + ex.getMessage());
+            }
         } catch (IOException ex) {
-            if (readerRunning.get() && state.get() != ConnectionState.DISCONNECTED) {
-                notifyError("Connection lost: " + ex.getMessage());
+            if (readerRunning.get() && !intentionalDisconnect && !closed
+                    && state.get() != ConnectionState.DISCONNECTED) {
+                unexpectedDrop = true;
+                if (!shouldAutoReconnect()) {
+                    notifyError("Connection lost: " + ex.getMessage());
+                }
             }
         } finally {
             readerRunning.set(false);
             stopHeartbeat();
-            setState(ConnectionState.DISCONNECTED);
             closeSocketOnly(false);
+            if (unexpectedDrop && shouldAutoReconnect()) {
+                scheduleReconnect();
+            } else if (state.get() != ConnectionState.RECONNECTING) {
+                setState(ConnectionState.DISCONNECTED);
+            }
         }
+    }
+
+    private boolean shouldAutoReconnect() {
+        return autoReconnect && !intentionalDisconnect && !closed
+                && sessionToken != null && !sessionToken.isBlank()
+                && lastHost != null && lastPort > 0;
+    }
+
+    private void scheduleReconnect() {
+        if (reconnectExecutor.isShutdown()) {
+            setState(ConnectionState.DISCONNECTED);
+            return;
+        }
+        setState(ConnectionState.RECONNECTING);
+        reconnectExecutor.submit(() -> {
+            for (int attempt = 1; attempt <= MAX_RECONNECT_ATTEMPTS; attempt++) {
+                if (intentionalDisconnect || closed) {
+                    setState(ConnectionState.DISCONNECTED);
+                    return;
+                }
+                long delay = reconnectBaseDelayMs * (1L << (attempt - 1));
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    setState(ConnectionState.DISCONNECTED);
+                    return;
+                }
+                if (intentionalDisconnect || closed) {
+                    setState(ConnectionState.DISCONNECTED);
+                    return;
+                }
+                try {
+                    LOG.info("Attempting session resume (" + attempt + "/" + MAX_RECONNECT_ATTEMPTS + ")");
+                    resume(lastHost, lastPort);
+                    return;
+                } catch (IOException ex) {
+                    LOG.warning("Reconnect attempt " + attempt + " failed: " + ex.getMessage());
+                }
+            }
+            setState(ConnectionState.DISCONNECTED);
+            notifyError("Connection lost and session recovery failed after " + MAX_RECONNECT_ATTEMPTS + " attempts.");
+        });
     }
 
     private void setState(ConnectionState next) {
@@ -291,11 +440,22 @@ public class GameTcpClient implements AutoCloseable {
         out = null;
     }
 
-    @Override
-    public void close() {
+    /**
+     * Intentionally disconnect the active TCP session without shutting down client executors,
+     * allowing subsequent calls to {@link #connect(String, int, String)} or {@link #resume(String, int)}.
+     */
+    public synchronized void disconnect() {
+        intentionalDisconnect = true;
         closeSocketOnly(true);
         setState(ConnectionState.DISCONNECTED);
+    }
+
+    @Override
+    public void close() {
+        closed = true;
+        disconnect();
         heartbeatScheduler.shutdownNow();
+        reconnectExecutor.shutdownNow();
     }
 
     public String getLastHost() {

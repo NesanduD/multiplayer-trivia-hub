@@ -185,7 +185,7 @@ public class LobbyFrame extends JFrame {
         serverByLabel.clear();
         for (DiscoveryMessage server : servers) {
             String label = server.getServerName() + " — " + server.getHost() + ":" + server.getTcpPort()
-                    + " [" + server.getPlayers() + " players]";
+                    + " [" + server.getPlayers() + " players, " + server.getRooms() + " rooms]";
             serverListModel.addElement(label);
             serverByLabel.put(label, server);
         }
@@ -229,7 +229,7 @@ public class LobbyFrame extends JFrame {
     private void connect() {
         try {
             if (tcpClient.getState() != ConnectionState.DISCONNECTED) {
-                tcpClient.close();
+                tcpClient.disconnect();
             }
             int port = Integer.parseInt(portField.getText().trim());
             tcpClient.connect(hostField.getText().trim(), port, nameField.getText().trim());
@@ -240,7 +240,7 @@ public class LobbyFrame extends JFrame {
     }
 
     private void disconnect() {
-        tcpClient.close();
+        tcpClient.disconnect();
         statusLabel.setText("Disconnected");
     }
 
