@@ -7,223 +7,216 @@
   <link rel="stylesheet" href="/styles.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=Sora:wght@400;600;700&display=swap" rel="stylesheet" />
 </head>
 <body>
+  <div class="bg-orb orb-a" aria-hidden="true"></div>
+  <div class="bg-orb orb-b" aria-hidden="true"></div>
   <div id="toastHost" class="toast-host" aria-live="polite"></div>
+  <div id="fxHost" class="fx-host" aria-hidden="true"></div>
 
   <div class="app">
-    <header class="hero">
-      <div>
-        <p class="eyebrow">UoM Network Programming · Live Demo</p>
-        <h1>Trivia Hub</h1>
-        <p class="tagline">Play with friends while seeing TCP, UDP, NIO, multithreading, and HTTP working in one app.</p>
-      </div>
-      <div class="hero-card" id="liveBadge">
-        <span class="dot"></span>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">✦</span>
         <div>
-          <strong id="heroStatus">Checking server…</strong>
-          <p id="heroMeta" class="muted small">HTTP · WebSocket · UDP beacon</p>
+          <h1>Trivia Hub</h1>
+          <p class="brand-sub">Play together. Beat the clock.</p>
         </div>
+      </div>
+      <div class="topbar-right">
+        <span id="statusPill" class="status-pill offline">Offline</span>
+        <span id="rttPill" class="status-pill subtle hidden">—</span>
+        <nav class="tabs" role="tablist" aria-label="Main">
+          <button class="tab active" data-tab="play">Play</button>
+          <button class="tab" data-tab="stats">Scores</button>
+          <button class="tab" data-tab="lab">Lab</button>
+          <button class="tab" data-tab="help">Help</button>
+        </nav>
       </div>
     </header>
 
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="play">Play</button>
-      <button class="tab" data-tab="lab">Network Lab</button>
-      <button class="tab" data-tab="stats">Stats & History</button>
-      <button class="tab" data-tab="help">How to play</button>
-    </nav>
-
     <!-- PLAY -->
-    <section class="panel tab-panel active" id="tab-play">
-      <ol class="steps" id="steps">
-        <li class="active" data-step="1">1. Name</li>
-        <li data-step="2">2. Connect</li>
-        <li data-step="3">3. Room</li>
-        <li data-step="4">4. Play</li>
-      </ol>
+    <section class="tab-panel active" id="tab-play">
 
-      <div id="lobbyView">
-        <div class="connect-card">
+      <!-- Welcome / connect -->
+      <div id="welcomeView" class="screen screen-welcome">
+        <div class="welcome-card animate-in">
+          <p class="kicker">Ready when you are</p>
+          <h2>Enter your name to start</h2>
           <label class="field">
-            <span>Your display name</span>
-            <input id="playerName" type="text" value="Player" maxlength="24" placeholder="e.g. Amal" />
+            <span class="sr-only">Your name</span>
+            <input id="playerName" type="text" value="Player" maxlength="24" placeholder="Your name" autocomplete="nickname" />
           </label>
-          <div class="row wrap">
-            <button id="connectBtn" class="primary">Connect to game server</button>
-            <button id="disconnectBtn" class="ghost" disabled>Disconnect</button>
-            <span id="statusPill" class="pill muted">Disconnected</span>
-            <span id="rttPill" class="pill muted hidden">RTT —</span>
-          </div>
-          <p id="serverInfo" class="muted small">Loading server info…</p>
-        </div>
-
-        <div class="howto-banner">
-          <strong>Multiplayer quick start</strong>
-          <ol>
-            <li><strong>Player 1:</strong> Connect → Create room → share the room code.</li>
-            <li><strong>Other players:</strong> Connect with a different name → click <em>Join</em> on that live room, or paste the room code.</li>
-            <li>When everyone appears in the room, the host clicks <strong>Start Game</strong>.</li>
-            <li>Use <strong>Room chat</strong> after you are inside the same room.</li>
-          </ol>
-        </div>
-
-        <div class="grid-2">
-          <div>
-            <div class="section-head">
-              <h2>Live rooms</h2>
-              <button id="refreshRoomsBtn" class="ghost tiny" disabled>Refresh list</button>
-            </div>
-            <p class="hint" style="margin-top:0">Rooms appear here for everyone who is connected and still in the lobby. Auto-refreshes every few seconds.</p>
-            <ul id="roomList" class="list"></ul>
-
-            <div class="create-box">
-              <label class="field">
-                <span>Join with room code</span>
-                <input id="joinCode" type="text" placeholder="e.g. r-ab12cd34" />
-              </label>
-              <button id="joinCodeBtn" class="primary" disabled>Join this room</button>
-            </div>
-
-            <div class="create-box">
-              <label class="field">
-                <span>Or create a new room</span>
-                <input id="roomName" type="text" value="Trivia Room" />
-              </label>
-              <button id="createRoomBtn" class="primary" disabled>Create & enter room</button>
-            </div>
-          </div>
-          <div>
-            <div class="section-head">
-              <h2>Who’s online</h2>
-              <button id="refreshPlayersBtn" class="ghost tiny">Refresh</button>
-            </div>
-            <ul id="playerList" class="list compact"></ul>
-            <p class="hint">Open a second browser tab/window, use another name, Connect, then Join the first player’s room.</p>
+          <button id="connectBtn" class="btn btn-primary btn-xl">Play now</button>
+          <p class="hint-center">Friends can open this same page in another tab.</p>
+          <p id="serverInfo" class="sr-only">Loading server info…</p>
+          <div id="liveBadge" class="sr-only">
+            <strong id="heroStatus">Checking…</strong>
+            <p id="heroMeta"></p>
           </div>
         </div>
       </div>
 
-      <div class="game-panel hidden" id="gameView">
-        <div class="row space">
+      <!-- Lobby -->
+      <div id="lobbyView" class="screen hidden">
+        <div class="lobby-head animate-in">
           <div>
+            <h2>Lobby</h2>
+            <p class="muted">Create a room or join a friend’s room.</p>
+          </div>
+          <button id="disconnectBtn" class="btn btn-ghost" disabled>Leave server</button>
+        </div>
+
+        <div class="action-cards animate-in delay-1">
+          <div class="action-card">
+            <h3>Create room</h3>
+            <p>You’re the host. Share the code.</p>
+            <input id="roomName" type="text" value="Trivia Room" maxlength="32" />
+            <button id="createRoomBtn" class="btn btn-primary" disabled>Create room</button>
+          </div>
+          <div class="action-card">
+            <h3>Join with code</h3>
+            <p>Paste the code your friend shared.</p>
+            <input id="joinCode" type="text" placeholder="r-ab12cd34" />
+            <button id="joinCodeBtn" class="btn btn-secondary" disabled>Join room</button>
+          </div>
+        </div>
+
+        <div class="lobby-grid animate-in delay-2">
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Live rooms</h3>
+              <button id="refreshRoomsBtn" class="btn btn-ghost btn-sm" disabled>Refresh</button>
+            </div>
+            <ul id="roomList" class="room-list"></ul>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Online now</h3>
+              <button id="refreshPlayersBtn" class="btn btn-ghost btn-sm">Refresh</button>
+            </div>
+            <ul id="playerList" class="people-list"></ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Game -->
+      <div id="gameView" class="screen hidden">
+        <div class="game-top animate-in">
+          <div>
+            <p class="kicker" id="roomStatus">Waiting for players</p>
             <h2 id="roomTitle">Room</h2>
-            <p id="roomStatus" class="muted">Waiting…</p>
-            <p class="room-code-line">Room code: <code id="roomCodeLabel">—</code> <span class="muted small">(share this so friends can join)</span></p>
+            <div class="invite-row">
+              <span>Code <code id="roomCodeLabel">—</code></span>
+              <button id="copyInviteBtn" class="btn btn-ghost btn-sm">Copy</button>
+            </div>
             <div id="playerChips" class="chips"></div>
           </div>
-          <div class="row wrap">
-            <span id="timer" class="pill timer">Time: —</span>
-            <button id="copyInviteBtn" class="ghost">Copy room code</button>
-            <button id="startBtn" class="primary">Start Game</button>
-            <button id="leaveBtn" class="ghost">Leave room</button>
+          <div class="game-actions">
+            <div id="timer" class="timer-ring" data-label="—">
+              <svg viewBox="0 0 36 36" aria-hidden="true">
+                <path class="timer-bg" d="M18 2.5a15.5 15.5 0 1 1 0 31 15.5 15.5 0 1 1 0-31" />
+                <path id="timerArc" class="timer-fg" d="M18 2.5a15.5 15.5 0 1 1 0 31 15.5 15.5 0 1 1 0-31" />
+              </svg>
+              <span id="timerText">—</span>
+            </div>
+            <button id="startBtn" class="btn btn-primary">Start</button>
+            <button id="leaveBtn" class="btn btn-ghost">Exit</button>
           </div>
         </div>
 
-        <div class="game-grid">
-          <div>
-            <div class="question-card">
-              <p class="muted small" id="questionMeta">Waiting for host to start — chat with teammates on the right</p>
-              <h3 id="questionText">Questions will appear here</h3>
-              <div id="options" class="options"></div>
-              <div class="row wrap">
-                <button id="submitBtn" class="primary" disabled>Submit Answer</button>
-                <p id="answerFeedback" class="feedback"></p>
+        <div class="game-layout">
+          <div class="question-stage panel animate-in delay-1">
+            <p class="kicker" id="questionMeta">Waiting for host to start</p>
+            <h3 id="questionText" class="question-text">Get ready…</h3>
+            <div id="options" class="options"></div>
+            <div class="answer-row">
+              <button id="submitBtn" class="btn btn-primary btn-lg" disabled>Lock answer</button>
+              <p id="answerFeedback" class="feedback"></p>
+            </div>
+            <div class="progress" aria-hidden="true"><div id="timerBar" class="progress-bar"></div></div>
+          </div>
+
+          <aside class="side-stack">
+            <div class="panel score-panel animate-in delay-2">
+              <h3>Leaderboard</h3>
+              <ol id="scoreList" class="score-list"></ol>
+            </div>
+            <div class="panel chat-panel animate-in delay-3">
+              <h3>Chat</h3>
+              <div id="chatLog" class="chat-log"></div>
+              <div class="chat-compose">
+                <input id="chatInput" type="text" placeholder="Say something…" maxlength="300" />
+                <button id="chatSendBtn" class="btn btn-secondary">Send</button>
               </div>
-              <div class="progress" aria-hidden="true"><div id="timerBar" class="progress-bar"></div></div>
             </div>
-          </div>
-          <div>
-            <h3>Live leaderboard</h3>
-            <ol id="scoreList" class="list"></ol>
-            <h3>Room chat</h3>
-            <p class="muted small">Messages go only to players in <em>this</em> room.</p>
-            <div id="chatLog" class="chat-log"></div>
-            <div class="row">
-              <input id="chatInput" type="text" placeholder="Type a message to this room…" maxlength="300" />
-              <button id="chatSendBtn">Send</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- NETWORK LAB -->
-    <section class="panel tab-panel" id="tab-lab">
-      <div class="section-head">
-        <div>
-          <h2>Network Lab</h2>
-          <p class="muted">Lecture concepts running live in this project.</p>
-        </div>
-        <div class="row wrap">
-          <button id="pingBtn" class="primary">Measure RTT (PING/PONG)</button>
-          <button id="refreshLabBtn" class="ghost">Refresh</button>
-        </div>
-      </div>
-      <div id="conceptGrid" class="concept-grid"></div>
-      <div class="grid-2">
-        <div>
-          <h3>Protocol inspector</h3>
-          <p class="muted small">Last WebSocket JSON messages (same types as the TCP protocol).</p>
-          <pre id="protocolLog" class="stats-box">Connect to see HELLO / WELCOME / ROOM_* traffic.</pre>
-        </div>
-        <div>
-          <h3>Service map</h3>
-          <ul id="serviceMap" class="list compact"></ul>
-          <p class="hint">HTTP is request/response. WebSocket/TCP stay open for live quiz + chat. UDP beacons are one-way discovery packets.</p>
+          </aside>
         </div>
       </div>
     </section>
 
     <!-- STATS -->
-    <section class="panel tab-panel" id="tab-stats">
-      <div class="section-head">
-        <h2>HTTP stats & match history</h2>
-        <button id="statsBtn" class="ghost">Refresh</button>
+    <section class="tab-panel panel" id="tab-stats">
+      <div class="panel-head">
+        <h2>Scores & history</h2>
+        <button id="statsBtn" class="btn btn-ghost btn-sm">Refresh</button>
       </div>
-      <div class="grid-2">
+      <div class="lobby-grid">
         <div>
-          <h3>GET /api/leaderboard</h3>
-          <pre id="statsBox" class="stats-box">Loading…</pre>
+          <h3>Leaderboard</h3>
+          <pre id="statsBox" class="stats-box">No scores yet.</pre>
         </div>
         <div>
-          <h3>GET /api/matches</h3>
-          <pre id="historyBox" class="stats-box">Loading…</pre>
+          <h3>Recent matches</h3>
+          <pre id="historyBox" class="stats-box">No matches yet.</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- LAB (technical, progressive disclosure) -->
+    <section class="tab-panel panel" id="tab-lab">
+      <div class="panel-head">
+        <div>
+          <h2>Network Lab</h2>
+          <p class="muted">For demos: TCP, UDP, NIO, threads, HTTP.</p>
+        </div>
+        <div class="row">
+          <button id="pingBtn" class="btn btn-primary btn-sm">Ping RTT</button>
+          <button id="refreshLabBtn" class="btn btn-ghost btn-sm">Refresh</button>
+        </div>
+      </div>
+      <div id="conceptGrid" class="concept-grid"></div>
+      <div class="lobby-grid">
+        <div>
+          <h3>Protocol log</h3>
+          <pre id="protocolLog" class="stats-box">Connect from Play to see live messages.</pre>
+        </div>
+        <div>
+          <h3>Services</h3>
+          <ul id="serviceMap" class="people-list"></ul>
         </div>
       </div>
     </section>
 
     <!-- HELP -->
-    <section class="panel tab-panel" id="tab-help">
+    <section class="tab-panel panel" id="tab-help">
       <h2>How to play</h2>
       <div class="help-grid">
-        <article>
-          <h3>1. Connect</h3>
-          <p>Your browser opens a WebSocket to the Java server. That duplex channel carries the same game messages used by the TCP NIO clients.</p>
-        </article>
-        <article>
-          <h3>2. Create or join a room</h3>
-          <p>Rooms are managed by a multithreaded game engine. Open a second browser tab with another name to join the same room.</p>
-        </article>
-        <article>
-          <h3>3. Answer before time runs out</h3>
-          <p>Each question uses a scheduled timer (<code>Callable</code>/<code>Future</code>). Faster correct answers still score fixed points in this demo.</p>
-        </article>
-        <article>
-          <h3>4. Check stats</h3>
-          <p>When a match ends, results are saved and exposed via REST JSON endpoints — separate from the live play channel.</p>
-        </article>
+        <article><h3>1. Name</h3><p>Type your name and tap <strong>Play now</strong>.</p></article>
+        <article><h3>2. Room</h3><p>One person creates a room and shares the code. Others join with that code.</p></article>
+        <article><h3>3. Start</h3><p>When everyone is in, the host taps <strong>Start</strong>.</p></article>
+        <article><h3>4. Answer</h3><p>Pick an option and lock it before time runs out. Chat while you wait.</p></article>
       </div>
-      <h3>Lecture mapping</h3>
-      <ul class="help-list">
-        <li><strong>TCP / sockets</strong> — framed JSON commands, connection lifecycle</li>
-        <li><strong>Java NIO</strong> — non-blocking TCP server with Selector</li>
-        <li><strong>UDP multicast</strong> — LAN server discovery beacons</li>
-        <li><strong>Multithreading</strong> — concurrent rooms, synchronized scores, timers</li>
-        <li><strong>HTTP + REST</strong> — leaderboard & history JSON APIs</li>
-      </ul>
     </section>
+
+    <!-- hidden steps for JS compatibility -->
+    <ol id="steps" class="sr-only" aria-hidden="true">
+      <li data-step="1" class="active"></li>
+      <li data-step="2"></li>
+      <li data-step="3"></li>
+      <li data-step="4"></li>
+    </ol>
   </div>
   <script src="/app.js"></script>
 </body>

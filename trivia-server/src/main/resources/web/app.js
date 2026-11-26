@@ -18,6 +18,7 @@
     statsBtn: $("statsBtn"),
     statsBox: $("statsBox"),
     historyBox: $("historyBox"),
+    welcomeView: $("welcomeView"),
     lobbyView: $("lobbyView"),
     gameView: $("gameView"),
     roomTitle: $("roomTitle"),
@@ -25,6 +26,8 @@
     roomCodeLabel: $("roomCodeLabel"),
     playerChips: $("playerChips"),
     timer: $("timer"),
+    timerText: $("timerText"),
+    timerArc: $("timerArc"),
     timerBar: $("timerBar"),
     startBtn: $("startBtn"),
     leaveBtn: $("leaveBtn"),
@@ -47,8 +50,10 @@
     heroMeta: $("heroMeta"),
     liveBadge: $("liveBadge"),
     steps: $("steps"),
+    fxHost: $("fxHost"),
   };
 
+  const RING = 97.4;
   let ws = null;
   let wsUrl = `ws://${location.hostname}:5001`;
   let serverInfo = null;
@@ -59,30 +64,30 @@
   let selectedOption = null;
   let endsAt = null;
   let questionStartedAt = null;
+  let questionDuration = 15000;
   let timerHandle = null;
   let pingHandle = null;
   let roomRefreshHandle = null;
   const protocolLines = [];
 
   function toast(text, bad = false) {
-    const host = $("toastHost");
     const el = document.createElement("div");
     el.className = "toast" + (bad ? " bad" : "");
     el.textContent = text;
-    host.appendChild(el);
-    setTimeout(() => el.remove(), 3500);
+    $("toastHost").appendChild(el);
+    setTimeout(() => el.remove(), 2800);
   }
 
-  function setStatus(text, kind = "muted") {
+  function setStatus(text, kind = "offline") {
     els.statusPill.textContent = text;
-    els.statusPill.className = `pill ${kind}`;
+    els.statusPill.className = "status-pill " + kind;
   }
 
   function setStep(n) {
+    if (!els.steps) return;
     [...els.steps.children].forEach((li) => {
       const step = Number(li.dataset.step);
       li.classList.toggle("active", step === n);
-      li.classList.toggle("done", step < n);
     });
   }
 
@@ -90,12 +95,34 @@
     els.createRoomBtn.disabled = !enabled;
     els.joinCodeBtn.disabled = !enabled;
     els.refreshRoomsBtn.disabled = !enabled;
+    els.disconnectBtn.disabled = !enabled;
+  }
+
+  function showWelcome() {
+    els.welcomeView.classList.remove("hidden");
+    els.lobbyView.classList.add("hidden");
+    els.gameView.classList.add("hidden");
+  }
+
+  function showLobbyScreen() {
+    els.welcomeView.classList.add("hidden");
+    els.lobbyView.classList.remove("hidden");
+    els.gameView.classList.add("hidden");
+    currentRoomId = null;
+    clearInterval(timerHandle);
+    refreshRooms();
+  }
+
+  function showGameScreen() {
+    els.welcomeView.classList.add("hidden");
+    els.lobbyView.classList.add("hidden");
+    els.gameView.classList.remove("hidden");
   }
 
   function colorFor(name) {
     let hash = 0;
     for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-    return `hsl(${hash % 360} 70% 62%)`;
+    return `hsl(${hash % 360} 72% 62%)`;
   }
 
   function avatar(name) {
@@ -106,13 +133,26 @@
     return span;
   }
 
+  function celebrate() {
+    const colors = ["#2fe39a", "#ffc857", "#7dffc7", "#5ec8ff", "#ff6b7a"];
+    for (let i = 0; i < 28; i++) {
+      const bit = document.createElement("span");
+      bit.className = "confetti";
+      bit.style.left = Math.random() * 100 + "vw";
+      bit.style.background = colors[i % colors.length];
+      bit.style.animationDelay = (Math.random() * 0.25) + "s";
+      els.fxHost.appendChild(bit);
+      setTimeout(() => bit.remove(), 1200);
+    }
+  }
+
   function logProtocol(direction, msg) {
+    if (!els.protocolLog) return;
     const line = `${new Date().toLocaleTimeString()} ${direction} ${msg.type}` +
-      (msg.roomId ? ` room=${msg.roomId}` : "") +
-      (msg.text ? ` “${String(msg.text).slice(0, 40)}”` : "");
+      (msg.roomId ? ` room=${msg.roomId}` : "");
     protocolLines.unshift(line);
     while (protocolLines.length > 40) protocolLines.pop();
-    if (els.protocolLog) els.protocolLog.textContent = protocolLines.join("\n");
+    els.protocolLog.textContent = protocolLines.join("\n");
   }
 
   function send(msg) {
@@ -130,32 +170,31 @@
       const res = await fetch("/api/server-info");
       serverInfo = await res.json();
       wsUrl = serverInfo.wsUrl || wsUrl;
-      const uptimeMin = Math.floor((serverInfo.uptimeMs || 0) / 60000);
-      els.serverInfo.textContent =
-        `${serverInfo.serverName} @ ${serverInfo.host} · WS ${serverInfo.wsPort} · TCP ${serverInfo.tcpPort} · HTTP ${serverInfo.httpPort} · up ${uptimeMin}m`;
-      els.heroStatus.textContent = "Server online";
-      els.heroMeta.textContent = `UDP ${serverInfo.multicastGroup}:${serverInfo.multicastPort} · ${serverInfo.players} players · ${serverInfo.rooms} rooms`;
-      els.liveBadge.classList.add("online");
+      if (els.serverInfo) {
+        els.serverInfo.textContent = `${serverInfo.serverName} ready`;
+      }
+      if (els.heroStatus) els.heroStatus.textContent = "Server online";
+      if (els.heroMeta) {
+        els.heroMeta.textContent = `${serverInfo.players} players · ${serverInfo.rooms} rooms`;
+      }
       renderServiceMap();
-    } catch (err) {
-      els.serverInfo.textContent = "Server unreachable — start the Java server first.";
-      els.heroStatus.textContent = "Server offline";
-      els.liveBadge.classList.remove("online");
+    } catch (_) {
+      if (els.heroStatus) els.heroStatus.textContent = "Server offline";
     }
   }
 
   function renderServiceMap() {
     if (!serverInfo || !els.serviceMap) return;
     const rows = [
-      ["HTTP web UI + REST", `http://${location.host}/`, "Request/response JSON & pages"],
-      ["WebSocket live game", serverInfo.wsUrl, "Browser duplex channel"],
-      ["TCP NIO game", `${serverInfo.host}:${serverInfo.tcpPort}`, "Native Socket / NIO clients"],
-      ["UDP multicast beacon", `${serverInfo.multicastGroup}:${serverInfo.multicastPort}`, "LAN discovery (best-effort)"],
+      ["Web UI", `http://${location.host}/`],
+      ["WebSocket", serverInfo.wsUrl],
+      ["TCP NIO", `${serverInfo.host}:${serverInfo.tcpPort}`],
+      ["UDP beacon", `${serverInfo.multicastGroup}:${serverInfo.multicastPort}`],
     ];
     els.serviceMap.innerHTML = "";
-    rows.forEach(([title, addr, note]) => {
+    rows.forEach(([title, addr]) => {
       const li = document.createElement("li");
-      li.innerHTML = `<strong>${title}</strong><br/><code>${addr}</code><br/><span class="muted small">${note}</span>`;
+      li.innerHTML = `<strong>${title}</strong><br/><span class="muted">${addr}</span>`;
       els.serviceMap.appendChild(li);
     });
   }
@@ -168,15 +207,11 @@
       (data.concepts || []).forEach((c) => {
         const card = document.createElement("article");
         card.className = "concept";
-        card.innerHTML = `
-          <div class="lecture">${c.lecture}</div>
-          <h3>${c.name}</h3>
-          <p>${c.meaning}</p>
-          <p><strong>In this app:</strong> ${c.evidence}</p>`;
+        card.innerHTML = `<div class="lecture">${c.lecture}</div><h3>${c.name}</h3><p>${c.meaning}</p><p>${c.evidence}</p>`;
         els.conceptGrid.appendChild(card);
       });
     } catch (_) {
-      els.conceptGrid.innerHTML = `<p class="muted">Could not load /api/network-lab</p>`;
+      els.conceptGrid.innerHTML = `<p class="muted">Lab unavailable</p>`;
     }
   }
 
@@ -186,17 +221,16 @@
       const board = await boardRes.json();
       const matches = await matchRes.json();
       els.statsBox.textContent = board.length
-        ? board.map((p, i) => `${i + 1}. ${p.playerName} — ${p.totalScore} pts · ${p.matchesPlayed} matches · ${p.wins} wins`).join("\n")
-        : "No matches recorded yet.";
+        ? board.map((p, i) => `${i + 1}. ${p.playerName} — ${p.totalScore} pts`).join("\n")
+        : "Play a match to fill the board.";
       els.historyBox.textContent = matches.length
-        ? matches.slice(0, 12).map((m) => {
+        ? matches.slice(0, 10).map((m) => {
             const scores = (m.scores || []).map((s) => `${s.playerName}:${s.score}`).join(", ");
-            return `${m.roomName} · ${new Date(m.endedAt).toLocaleString()}\n  ${scores}`;
+            return `${m.roomName}\n  ${scores}`;
           }).join("\n\n")
-        : "No match history yet.";
+        : "No matches yet.";
     } catch (err) {
-      els.statsBox.textContent = "Failed: " + err.message;
-      els.historyBox.textContent = "Failed: " + err.message;
+      els.statsBox.textContent = err.message;
     }
   }
 
@@ -207,26 +241,19 @@
       els.playerList.innerHTML = "";
       if (!players.length) {
         const li = document.createElement("li");
-        li.textContent = "Nobody connected yet.";
+        li.textContent = "No one else is here yet.";
         els.playerList.appendChild(li);
         return;
       }
       players.forEach((p) => {
         const li = document.createElement("li");
-        const wrap = document.createElement("div");
-        wrap.className = "row";
-        wrap.appendChild(avatar(p.playerName));
+        li.appendChild(avatar(p.playerName));
         const text = document.createElement("span");
-        text.textContent = p.roomId
-          ? `${p.playerName} · in room ${p.roomId}`
-          : `${p.playerName} · lobby (can join a room)`;
-        wrap.appendChild(text);
-        li.appendChild(wrap);
+        text.textContent = p.roomId ? `${p.playerName} · in a room` : `${p.playerName} · lobby`;
+        li.appendChild(text);
         els.playerList.appendChild(li);
       });
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
   }
 
   function refreshRooms() {
@@ -241,31 +268,26 @@
     try {
       const res = await fetch("/api/rooms");
       const rooms = await res.json();
-      // Only paint HTTP rooms when not already inside a room UI
-      if (!currentRoomId) {
-        renderRooms(rooms, !!(ws && ws.readyState === WebSocket.OPEN));
-      }
-    } catch (_) {
-      // ignore
-    }
+      if (!currentRoomId) renderRooms(rooms, !!(ws && ws.readyState === WebSocket.OPEN));
+    } catch (_) {}
   }
 
   function connect() {
     const name = els.playerName.value.trim() || "Player";
     playerName = name;
-    setStatus("Connecting…", "muted");
+    setStatus("Connecting…", "subtle");
     setStep(2);
     ws = new WebSocket(wsUrl);
     ws.onopen = () => {
-      setStatus("Connected", "ok");
+      setStatus("Online", "ok");
       els.connectBtn.disabled = true;
-      els.disconnectBtn.disabled = false;
       setLobbyActions(true);
       els.rttPill.classList.remove("hidden");
       send({ type: "HELLO", playerName: name, clientId: crypto.randomUUID() });
       startPingLoop();
       startRoomRefresh();
-      toast(`Connected as ${name}. Create a room or join a live one.`);
+      showLobbyScreen();
+      toast(`Welcome, ${name}!`);
     };
     ws.onmessage = (ev) => {
       try {
@@ -279,20 +301,16 @@
     ws.onclose = () => {
       stopPingLoop();
       stopRoomRefresh();
-      setStatus("Disconnected", "muted");
+      setStatus("Offline", "offline");
       els.connectBtn.disabled = false;
-      els.disconnectBtn.disabled = true;
       setLobbyActions(false);
       els.rttPill.classList.add("hidden");
       playerId = null;
-      showLobby();
+      currentRoomId = null;
+      showWelcome();
       setStep(1);
-      toast("Disconnected from game server");
     };
-    ws.onerror = () => {
-      setStatus("Connection error", "bad");
-      toast("WebSocket failed — is port 5001 open?", true);
-    };
+    ws.onerror = () => toast("Could not connect. Is the server running?", true);
   }
 
   function disconnect() {
@@ -305,12 +323,10 @@
     beat();
     pingHandle = setInterval(beat, 5000);
   }
-
   function stopPingLoop() {
     if (pingHandle) clearInterval(pingHandle);
     pingHandle = null;
   }
-
   function startRoomRefresh() {
     stopRoomRefresh();
     roomRefreshHandle = setInterval(() => {
@@ -318,7 +334,6 @@
       loadPlayers();
     }, 3000);
   }
-
   function stopRoomRefresh() {
     if (roomRefreshHandle) clearInterval(roomRefreshHandle);
     roomRefreshHandle = null;
@@ -329,7 +344,7 @@
       case "WELCOME":
         playerId = msg.playerId;
         playerName = msg.playerName || playerName;
-        setStatus(`Online as ${playerName}`, "ok");
+        setStatus(playerName, "ok");
         setStep(3);
         loadPlayers();
         refreshRooms();
@@ -337,8 +352,7 @@
       case "PONG": {
         const sent = msg.extra && msg.extra.clientTime ? Number(msg.extra.clientTime) : null;
         if (sent) {
-          els.rttPill.textContent = `RTT ${Math.max(0, Date.now() - sent)} ms`;
-          els.rttPill.className = "pill ok";
+          els.rttPill.textContent = `${Math.max(0, Date.now() - sent)} ms`;
         }
         break;
       }
@@ -348,7 +362,7 @@
       case "ROOM_CREATED":
         currentRoomId = msg.roomId;
         els.chatLog.innerHTML = "";
-        toast(`Room created. Code: ${msg.roomId} — share it with friends`);
+        toast("Room ready — share the code");
         break;
       case "ROOM_STATE":
         currentRoomId = msg.roomId;
@@ -359,59 +373,62 @@
         showQuestion(msg);
         break;
       case "ANSWER_RESULT":
-        els.answerFeedback.textContent = msg.correct ? `Correct! +${msg.points}` : "Not this time";
-        els.answerFeedback.className = "feedback " + (msg.correct ? "ok" : "bad");
-        renderScores(msg.scores || []);
+        handleAnswerResult(msg);
         break;
       case "SCORE_UPDATE":
+        renderScores(msg.scores || []);
+        break;
       case "GAME_OVER":
         renderScores(msg.scores || []);
-        if (msg.type === "GAME_OVER") {
-          els.answerFeedback.textContent = "Match finished — check Stats & History.";
-          els.answerFeedback.className = "feedback ok";
-          els.submitBtn.disabled = true;
-          els.startBtn.disabled = false;
-          els.questionMeta.textContent = "Round complete — you can chat or start again";
-          loadStats();
-          toast("Game over");
-        }
+        els.answerFeedback.textContent = "Round over!";
+        els.answerFeedback.className = "feedback ok";
+        els.submitBtn.disabled = true;
+        els.startBtn.disabled = false;
+        els.questionMeta.textContent = "Nice game — start again anytime";
+        celebrate();
+        loadStats();
+        toast("Game over");
         break;
       case "CHAT":
         appendChat(msg.from, msg.text, msg.from === "System");
         break;
       case "PLAYER_LEFT":
-        appendChat("System", `${msg.from || "A player"} left (${msg.reason})`, true);
+        appendChat("System", `${msg.from || "Someone"} left`, true);
         break;
       case "ERROR":
-        toast(msg.error || "Server error", true);
+        toast(msg.error || "Something went wrong", true);
         break;
       default:
         break;
     }
   }
 
+  function handleAnswerResult(msg) {
+    els.answerFeedback.textContent = msg.correct ? `Nice! +${msg.points}` : "Not quite";
+    els.answerFeedback.className = "feedback " + (msg.correct ? "ok" : "bad");
+    [...els.options.children].forEach((btn, i) => {
+      if (msg.correct && selectedOption === i) btn.classList.add("correct");
+      if (!msg.correct && selectedOption === i) btn.classList.add("wrong");
+    });
+    if (msg.correct) celebrate();
+    renderScores(msg.scores || []);
+  }
+
   function appendChat(from, text, system = false) {
     const mine = !system && from && playerName && from === playerName;
     const line = document.createElement("div");
     line.className = "chat-line " + (system ? "system" : mine ? "mine" : "theirs");
-
     const bubble = document.createElement("div");
     bubble.className = "chat-bubble";
-
     if (!system) {
       const who = document.createElement("span");
       who.className = "who";
       who.textContent = from || "Unknown";
       bubble.appendChild(who);
     }
-
     const body = document.createElement("div");
-    body.className = "msg-text";
-    body.textContent = system
-      ? ((from ? from + ": " : "") + (text || ""))
-      : (text || "");
+    body.textContent = system ? `${from}: ${text || ""}` : (text || "");
     bubble.appendChild(body);
-
     line.appendChild(bubble);
     els.chatLog.appendChild(line);
     els.chatLog.scrollTop = els.chatLog.scrollHeight;
@@ -421,56 +438,45 @@
     els.roomList.innerHTML = "";
     if (!rooms.length) {
       const li = document.createElement("li");
-      li.textContent = "No live rooms yet. Create one, then friends refresh/join.";
+      li.className = "room-card";
+      li.textContent = "No live rooms yet. Create one!";
       els.roomList.appendChild(li);
       return;
     }
     rooms.forEach((room) => {
       const li = document.createElement("li");
-      const card = document.createElement("div");
-      card.className = "room-card";
+      li.className = "room-card";
       const title = document.createElement("strong");
       title.textContent = room.roomName || "Room";
       const meta = document.createElement("div");
       meta.className = "meta";
-      const names = (room.playerNames || []).join(", ") || "empty";
-      meta.textContent = `${room.players}/${room.maxPlayers} players · ${room.status} · code ${room.roomId} · ${names}`;
-      card.appendChild(title);
-      card.appendChild(meta);
-
+      const names = (room.playerNames || []).join(", ") || "waiting for players";
+      meta.textContent = `${room.players}/${room.maxPlayers} · ${names}`;
+      li.appendChild(title);
+      li.appendChild(meta);
       if (canJoin) {
-        const btn = document.createElement("button");
         const joinable = room.joinable !== false && room.status === "WAITING";
-        btn.className = joinable ? "primary" : "ghost";
-        btn.textContent = joinable ? "Join this room" : (room.status === "PLAYING" ? "In progress (wait)" : "Cannot join");
+        const btn = document.createElement("button");
+        btn.className = joinable ? "btn btn-primary btn-sm" : "btn btn-ghost btn-sm";
+        btn.textContent = joinable ? "Join" : "In progress";
         btn.disabled = !joinable;
         btn.onclick = () => {
           els.joinCode.value = room.roomId;
           send({ type: "JOIN_ROOM", roomId: room.roomId });
-          toast(`Joining ${room.roomName}…`);
         };
-        card.appendChild(btn);
+        li.appendChild(btn);
       }
-      li.appendChild(card);
       els.roomList.appendChild(li);
     });
   }
 
-  function showLobby() {
-    els.gameView.classList.add("hidden");
-    els.lobbyView.classList.remove("hidden");
-    currentRoomId = null;
-    clearInterval(timerHandle);
-    refreshRooms();
-  }
-
   function showGame(state) {
-    els.lobbyView.classList.add("hidden");
-    els.gameView.classList.remove("hidden");
+    showGameScreen();
     els.roomTitle.textContent = state.roomName || "Room";
     els.roomCodeLabel.textContent = state.roomId || currentRoomId || "—";
     const count = (state.players || []).length;
-    els.roomStatus.textContent = `Status: ${state.status} · ${count} player(s) in this room`;
+    els.roomStatus.textContent =
+      state.status === "WAITING" ? `Waiting · ${count} player${count === 1 ? "" : "s"}` : `Playing · ${count} player${count === 1 ? "" : "s"}`;
     els.startBtn.disabled = state.status !== "WAITING";
     els.playerChips.innerHTML = "";
     (state.players || []).forEach((name) => {
@@ -487,9 +493,12 @@
     selectedOption = null;
     endsAt = msg.endsAt;
     questionStartedAt = Date.now();
-    const total = Math.max(1, (endsAt || Date.now()) - questionStartedAt);
-    els.questionMeta.textContent = `Question ${msg.qIndex + 1} · answer before the timer ends`;
+    questionDuration = Math.max(1000, (endsAt || Date.now()) - questionStartedAt);
+    els.questionMeta.textContent = `Question ${msg.qIndex + 1}`;
     els.questionText.textContent = msg.text;
+    els.questionText.classList.remove("animate-in");
+    void els.questionText.offsetWidth;
+    els.questionText.classList.add("animate-in");
     els.answerFeedback.textContent = "";
     els.answerFeedback.className = "feedback";
     els.submitBtn.disabled = false;
@@ -499,6 +508,8 @@
       const btn = document.createElement("button");
       btn.className = "option";
       btn.textContent = `${String.fromCharCode(65 + i)}. ${opt}`;
+      btn.style.animationDelay = `${i * 0.05}s`;
+      btn.classList.add("animate-in");
       btn.onclick = () => {
         selectedOption = i;
         [...els.options.children].forEach((c) => c.classList.remove("selected"));
@@ -507,19 +518,26 @@
       els.options.appendChild(btn);
     });
     clearInterval(timerHandle);
-    timerHandle = setInterval(() => updateTimer(total), 100);
-    updateTimer(total);
+    timerHandle = setInterval(updateTimer, 100);
+    updateTimer();
   }
 
-  function updateTimer(totalMs) {
+  function updateTimer() {
     if (!endsAt) {
-      els.timer.textContent = "Time: —";
+      els.timerText.textContent = "—";
       els.timerBar.style.width = "100%";
+      els.timerArc.style.strokeDashoffset = "0";
       return;
     }
     const remaining = Math.max(0, endsAt - Date.now());
-    els.timer.textContent = `Time: ${(remaining / 1000).toFixed(1)}s`;
-    els.timerBar.style.width = Math.max(0, Math.min(100, (remaining / totalMs) * 100)) + "%";
+    const secs = (remaining / 1000).toFixed(0);
+    els.timerText.textContent = secs;
+    const pct = Math.max(0, Math.min(1, remaining / questionDuration));
+    els.timerBar.style.width = pct * 100 + "%";
+    els.timerArc.style.strokeDashoffset = String((1 - pct) * RING);
+    const urgent = remaining <= 5000;
+    els.timer.classList.toggle("urgent", urgent);
+    els.timerBar.classList.toggle("urgent", urgent);
     if (remaining === 0) els.submitBtn.disabled = true;
   }
 
@@ -527,11 +545,8 @@
     els.scoreList.innerHTML = "";
     scores.forEach((s, idx) => {
       const li = document.createElement("li");
-      const wrap = document.createElement("div");
-      wrap.className = "row";
-      wrap.appendChild(avatar(s.playerName));
-      wrap.appendChild(document.createTextNode(`${idx + 1}. ${s.playerName}: ${s.score}`));
-      li.appendChild(wrap);
+      li.appendChild(avatar(s.playerName));
+      li.appendChild(document.createTextNode(` ${idx + 1}. ${s.playerName} · ${s.score}`));
       els.scoreList.appendChild(li);
     });
   }
@@ -539,7 +554,7 @@
   function joinByCode() {
     const code = (els.joinCode.value || "").trim();
     if (!code) {
-      toast("Paste a room code first (example: r-ab12cd34)", true);
+      toast("Enter a room code", true);
       return;
     }
     send({ type: "JOIN_ROOM", roomId: code });
@@ -561,16 +576,14 @@
   els.createRoomBtn.onclick = () =>
     send({ type: "CREATE_ROOM", roomName: els.roomName.value.trim() || "Trivia Room", maxPlayers: 4 });
   els.joinCodeBtn.onclick = joinByCode;
-  els.joinCode.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") joinByCode();
-  });
+  els.joinCode.addEventListener("keydown", (e) => { if (e.key === "Enter") joinByCode(); });
   els.refreshRoomsBtn.onclick = refreshRooms;
   els.refreshPlayersBtn.onclick = loadPlayers;
   els.statsBtn.onclick = loadStats;
   els.refreshLabBtn.onclick = () => { loadLab(); loadServerInfo(); };
   els.pingBtn.onclick = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      toast("Connect first to measure RTT", true);
+      toast("Go to Play and connect first", true);
       return;
     }
     send({ type: "PING", serverTime: Date.now() });
@@ -579,21 +592,21 @@
   els.leaveBtn.onclick = () => {
     send({ type: "LEAVE_ROOM" });
     els.chatLog.innerHTML = "";
-    showLobby();
+    showLobbyScreen();
     setStep(3);
   };
   els.copyInviteBtn.onclick = async () => {
     if (!currentRoomId) return;
     try {
       await navigator.clipboard.writeText(currentRoomId);
-      toast("Room code copied — friends paste it under Join with room code");
+      toast("Code copied");
     } catch (_) {
-      toast("Room code: " + currentRoomId);
+      toast(currentRoomId);
     }
   };
   els.submitBtn.onclick = () => {
     if (selectedOption == null) {
-      toast("Select an option first", true);
+      toast("Pick an answer first", true);
       return;
     }
     send({ type: "ANSWER", roomId: currentRoomId, qIndex: currentQIndex, optionIndex: selectedOption });
@@ -601,17 +614,12 @@
   };
   els.chatSendBtn.onclick = () => {
     const text = els.chatInput.value.trim();
-    if (!text) {
-      toast("Type a chat message first", true);
-      return;
-    }
+    if (!text) return;
     if (!currentRoomId) {
-      toast("Join a room before chatting", true);
+      toast("Join a room to chat", true);
       return;
     }
-    if (send({ type: "CHAT", text })) {
-      els.chatInput.value = "";
-    }
+    if (send({ type: "CHAT", text })) els.chatInput.value = "";
   };
   els.chatInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") els.chatSendBtn.click();
@@ -621,6 +629,7 @@
   });
 
   setLobbyActions(false);
+  showWelcome();
   loadServerInfo();
   loadStats();
   loadLab();
