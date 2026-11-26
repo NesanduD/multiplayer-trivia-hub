@@ -32,9 +32,10 @@ java -jar trivia-server/target/trivia-server-1.0.0-SNAPSHOT.jar
 Then open **http://localhost:8080/** in your browser.
 
 1. Enter a name → **Connect**
-2. **Create Room** (or join an existing one)
-3. **Start Game** → answer timed questions, chat, view live scores
-4. Use the **Leaderboard (HTTP)** panel for REST stats
+2. **Create Room** (or join from the room list — open a second tab for multiplayer)
+3. **Start Game** → timed questions, chat, live scores
+4. Use **Stats & History** for REST leaderboard/match history
+5. Open **Network Lab** to see lecture concepts (TCP, NIO, UDP, threads, HTTP) and measure WebSocket RTT
 
 Optional args: `<tcpPort> <httpPort> <serverName> <wsPort>`
 

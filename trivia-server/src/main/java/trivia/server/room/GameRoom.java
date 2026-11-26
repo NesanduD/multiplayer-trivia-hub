@@ -92,18 +92,33 @@ public class GameRoom {
     }
 
     public boolean addPlayer(ClientSession session) {
+        return addPlayerOrError(session) == null;
+    }
+
+    /**
+     * @return null on success, otherwise a user-friendly error message
+     */
+    public String addPlayerOrError(ClientSession session) {
         synchronized (lock) {
             if (!"WAITING".equals(status)) {
-                return false;
+                return "This room’s game already started. Wait for it to finish, or create another room.";
             }
             if (players.size() >= maxPlayers) {
-                return false;
+                return "Room is full (" + maxPlayers + " players).";
+            }
+            if (players.containsKey(session.getPlayerId())) {
+                return "You are already in this room.";
             }
             players.put(session.getPlayerId(), session);
             session.setRoomId(roomId);
             scoreBoard.register(session.getPlayerId(), session.getPlayerName());
             broadcastRoomState();
-            return true;
+            Message joinChat = Message.of(MessageType.CHAT);
+            joinChat.setRoomId(roomId);
+            joinChat.setFrom("System");
+            joinChat.setText(session.getPlayerName() + " joined the room");
+            broadcast(joinChat);
+            return null;
         }
     }
 
@@ -113,13 +128,20 @@ public class GameRoom {
             if (removed == null) {
                 return;
             }
+            String leftName = removed.getPlayerName() == null ? playerId : removed.getPlayerName();
             removed.setRoomId(null);
             scoreBoard.remove(playerId);
             Message left = Message.of(MessageType.PLAYER_LEFT);
             left.setPlayerId(playerId);
+            left.setFrom(leftName);
             left.setReason(reason);
             left.setRoomId(roomId);
             broadcast(left);
+            Message leftChat = Message.of(MessageType.CHAT);
+            leftChat.setRoomId(roomId);
+            leftChat.setFrom("System");
+            leftChat.setText(leftName + " left the room");
+            broadcast(leftChat);
             broadcastRoomState();
 
             if (players.isEmpty()) {
@@ -194,10 +216,19 @@ public class GameRoom {
     }
 
     public void handleChat(ClientSession session, Message message) {
+        String text = message.getText() == null ? "" : message.getText().trim();
+        if (text.isEmpty()) {
+            session.send(Message.error("Chat message cannot be empty"));
+            return;
+        }
+        if (text.length() > 300) {
+            text = text.substring(0, 300);
+        }
         Message chat = Message.of(MessageType.CHAT);
         chat.setRoomId(roomId);
         chat.setFrom(session.getPlayerName());
-        chat.setText(message.getText());
+        chat.setText(text);
+        chat.setServerTime(System.currentTimeMillis());
         broadcast(chat);
     }
 
@@ -216,13 +247,19 @@ public class GameRoom {
     }
 
     public Map<String, Object> summary() {
-        return Map.of(
-                "roomId", roomId,
-                "roomName", roomName,
-                "maxPlayers", maxPlayers,
-                "status", status,
-                "players", players.size()
-        );
+        List<String> names = new ArrayList<>();
+        for (ClientSession session : players.values()) {
+            names.add(session.getPlayerName());
+        }
+        Map<String, Object> map = new java.util.LinkedHashMap<>();
+        map.put("roomId", roomId);
+        map.put("roomName", roomName);
+        map.put("maxPlayers", maxPlayers);
+        map.put("status", status);
+        map.put("players", players.size());
+        map.put("playerNames", names);
+        map.put("joinable", "WAITING".equals(status) && players.size() < maxPlayers);
+        return map;
     }
 
     private void advanceQuestion() {

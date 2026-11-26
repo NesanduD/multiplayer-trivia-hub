@@ -59,6 +59,7 @@ public class RoomManager {
                 case ANSWER -> handleAnswer(session, message);
                 case CHAT -> handleChat(session, message);
                 case GOODBYE -> handleDisconnect(session, "GOODBYE");
+                case PING -> handlePing(session, message);
                 default -> session.send(Message.error("Unsupported message type: " + message.getType()));
             }
         } catch (Exception ex) {
@@ -90,6 +91,28 @@ public class RoomManager {
 
     public int totalRooms() {
         return rooms.size();
+    }
+
+    public List<Map<String, Object>> roomSummaries() {
+        List<Map<String, Object>> summaries = new ArrayList<>();
+        for (GameRoom room : rooms.values()) {
+            if (!"CLOSED".equals(room.getStatus())) {
+                summaries.add(room.summary());
+            }
+        }
+        return summaries;
+    }
+
+    public List<Map<String, Object>> onlinePlayers() {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (ClientSession session : sessionsByPlayer.values()) {
+            Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("playerId", session.getPlayerId());
+            row.put("playerName", session.getPlayerName());
+            row.put("roomId", session.getRoomId());
+            list.add(row);
+        }
+        return list;
     }
 
     public void shutdown() {
@@ -151,20 +174,27 @@ public class RoomManager {
     private void handleJoinRoom(ClientSession session, Message message) {
         requireRegistered(session);
         if (session.getRoomId() != null) {
-            session.send(Message.error("Leave current room first"));
+            session.send(Message.error("You are already in a room. Leave it first, then join another."));
             return;
         }
-        GameRoom room = rooms.get(message.getRoomId());
+        String roomId = message.getRoomId() == null ? null : message.getRoomId().trim();
+        if (roomId == null || roomId.isBlank()) {
+            session.send(Message.error("Enter a room code, or click Join on a live room."));
+            return;
+        }
+        GameRoom room = rooms.get(roomId);
         if (room == null) {
-            session.send(Message.error("Room not found"));
+            session.send(Message.error("No live room with code \"" + roomId + "\". Ask the host for the code, or refresh the room list."));
             return;
         }
-        if (!room.addPlayer(session)) {
-            session.send(Message.error("Unable to join room"));
+        String error = room.addPlayerOrError(session);
+        if (error != null) {
+            session.send(Message.error(error));
             return;
         }
         session.send(room.roomStateMessage());
         broadcastRoomList();
+        LOG.info(() -> session.getPlayerName() + " joined room " + roomId);
     }
 
     private void handleLeaveRoom(ClientSession session) {
@@ -207,9 +237,13 @@ public class RoomManager {
 
     private void handleChat(ClientSession session, Message message) {
         requireRegistered(session);
+        if (session.getRoomId() == null) {
+            session.send(Message.error("Join a room first to use chat."));
+            return;
+        }
         GameRoom room = rooms.get(session.getRoomId());
         if (room == null) {
-            session.send(Message.error("Not in a room"));
+            session.send(Message.error("You are not in a live room."));
             return;
         }
         room.handleChat(session, message);
@@ -238,6 +272,15 @@ public class RoomManager {
         }
         list.setRooms(summaries);
         return list;
+    }
+
+    private void handlePing(ClientSession session, Message message) {
+        Message pong = Message.of(MessageType.PONG);
+        pong.setServerTime(System.currentTimeMillis());
+        if (message.getServerTime() != null) {
+            pong.setExtra(Map.of("clientTime", message.getServerTime()));
+        }
+        session.send(pong);
     }
 
     private void requireRegistered(ClientSession session) {

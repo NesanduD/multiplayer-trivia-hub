@@ -9,6 +9,8 @@ public enum MessageType {
     WELCOME,
     GOODBYE,
     ERROR,
+    PING,
+    PONG,
 
     // Rooms
     CREATE_ROOM,
