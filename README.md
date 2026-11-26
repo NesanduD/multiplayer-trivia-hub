@@ -1,10 +1,77 @@
-# Multiplayer Trivia Hub
+# Multiplayer Trivia Game Hub (V2)
+
+Java networking project demonstrating TCP sockets, UDP multicast discovery, Java NIO, multithreading, HTTP/REST, and a browser WebSocket client — aligned with the UoM Network Programming module.
+
+**V2 slice (this release):** externalized config, ordered worker dispatch off the NIO selector, application heartbeats with idle cleanup, and secure token-based session recovery.
+
+## Modules
+
+| Module | Role |
+|--------|------|
+| `trivia-shared` | Protocol codec, models, DTOs (`RESUME`, session tokens) |
+| `trivia-server` | NIO TCP, WebSocket bridge, UDP beacon, rooms/engine, HTTP UI/stats, heartbeat + session registry |
+| `trivia-client` | Optional Swing/TCP client with heartbeat + `resume()` |
+
+## Ports (defaults)
+
+- **Web UI + HTTP API:** `8080` → [http://localhost:8080/](http://localhost:8080/)
+- **WebSocket game channel:** `5001`
+- **TCP game (NIO):** `5000`
+- **UDP multicast discovery:** `239.255.77.77:4445`
+
+Override via `trivia-hub.properties`, env vars (`TRIVIA_TCP_PORT`, …), or CLI:  
+`java -jar … [tcpPort] [httpPort] [serverName] [wsPort]`
+
+## Build & run
+
+```bash
+mvn clean package
+java -jar trivia-server/target/trivia-server-1.0.0-SNAPSHOT.jar
+```
+
+Open **http://localhost:8080/** — enter a name → **Play now** → create/join → **Start**.
+
+### V2 behaviours to demo
+
+1. **Heartbeat:** clients send `PING`; idle sockets beyond `heartbeat.timeoutMs` are soft-disconnected.
+2. **Session recovery:** `WELCOME` includes a one-time `sessionToken` (server stores SHA-256 only). After a drop, browser auto-`RESUME`s; Swing client can call `resume(host, port)`.
+3. **Worker dispatch:** selector/WS threads only enqueue; `SessionDispatcher` runs handlers in per-connection FIFO order.
+
+Config defaults live in `trivia-server/src/main/resources/trivia-hub.properties`.
+
+## Tests
+
+```bash
+mvn test
+```
+
+Covers protocol codec, scoreboard concurrency, smoke TCP+HTTP, dispatcher ordering, heartbeat timeout, resume, and name-only anti-impersonation.
+
+## Team ownership
+
+| Member | Focus | Key packages |
+|--------|-------|--------------|
+| 01 | TCP client + framing + reconnect | `trivia.client.net`, `RESUME` |
+| 02 | UDP multicast discovery | `trivia.server.discovery` |
+| 03 | Rooms, sessions, concurrency | `trivia.server.room`, `trivia.server.session` |
+| 04 | NIO + dispatch | `trivia.server.nio`, `trivia.server.dispatch` |
+| 05 | HTTP/REST + web UI | `trivia.server.http`, `web/` |
+
+See [docs/DEMO.md](docs/DEMO.md) and [docs/V2-ARCHITECTURE.md](docs/V2-ARCHITECTURE.md).
+
+## Not in this slice (planned later)
+
+PostgreSQL persistence, TLS/HTTPS/WSS, network simulation mode.
+
+---
+
+# NIO TCP Server (Member 1 write-up)
 
 Java NIO and multithreaded multiplayer trivia game.
 
-This repository currently contains **Member 1**: the TCP server that accepts clients, reads commands, and sends replies. Rooms, questions, UDP discovery, and the idle-client monitor are the other members. They plug into the interfaces in `src/main/java/trivia`.
+This section covers the TCP server that accepts clients, reads commands, and sends replies. Rooms, questions, UDP discovery, and the idle-client monitor are the other members. They plug into the interfaces in `src/main/java/trivia`.
 
-## What Member 1 does
+## What the NIO server does
 
 `GameServer` listens on port **5000**. One thread accepts every client and reads every socket. Each connection is a `ClientSession`.
 
@@ -24,7 +91,7 @@ The code stays inside the course lectures.
 - **Secure network programming.** After `JOIN`, the server stores who this socket is. Later commands are authorized from that stored player and room. A name typed in `ANSWER` or `CHAT` is not identity. The inbound buffer is a fixed 4 KB, so one client cannot make the server allocate without bound.
 - **Text lines.** Same idea as an HTTP request line and as `BufferedReader.readLine()`: one command is one line, and a trailing `\r` is stripped. This class is not an HTTP server and does not parse JSON.
 
-UDP, broadcast, and multicast are Member 4. Certificates and TLS are not part of this server.
+UDP, broadcast, and multicast are handled by the discovery member. Certificates and TLS are not part of this server.
 
 ## How the other members connect
 
@@ -45,9 +112,9 @@ After a successful `JOIN`, the room code calls:
 session.bindIdentity(playerId, roomId);
 ```
 
-Member 5 reads `session.getLastActiveTime()`, which is updated on every successful read and on `PING`.
+The idle-client monitor reads `session.getLastActiveTime()`, which is updated on every successful read and on `PING`.
 
-## Run the tests
+## Run the NIO tests
 
 Java 17 and Maven are required.
 
