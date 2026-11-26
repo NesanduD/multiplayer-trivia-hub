@@ -2,6 +2,7 @@ package trivia.server;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import trivia.server.config.ServerConfig;
 import trivia.server.http.HttpStatsServer;
 import trivia.server.nio.NioGameServer;
 import trivia.server.room.RoomManager;
@@ -20,6 +21,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -54,11 +56,13 @@ class IntegrationSmokeTest {
     @Test
     void helloCreateRoomAndHttpLeaderboard() throws Exception {
         Path store = Files.createTempFile("trivia-stats-", ".json");
-        java.util.concurrent.atomic.AtomicReference<RoomManager> ref = new java.util.concurrent.atomic.AtomicReference<>();
-        httpStatsServer = new HttpStatsServer(18080, store, 15000, 15001, "Test", ref::get);
-        roomManager = new RoomManager(httpStatsServer);
+        ServerConfig config = ServerConfig.forTests(15000, 18080, 15001);
+        AtomicReference<RoomManager> ref = new AtomicReference<>();
+        httpStatsServer = new HttpStatsServer(
+                config.httpPort(), store, config.tcpPort(), config.wsPort(), config.serverName(), ref::get);
+        roomManager = new RoomManager(httpStatsServer, config);
         ref.set(roomManager);
-        nioGameServer = new NioGameServer(15000, roomManager);
+        nioGameServer = new NioGameServer(config.tcpPort(), roomManager);
         httpStatsServer.start();
 
         serverThread = new Thread(() -> {
@@ -73,7 +77,8 @@ class IntegrationSmokeTest {
         Thread.sleep(300);
 
         try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", 15000), 2000);
+            socket.connect(new InetSocketAddress("127.0.0.1", config.tcpPort()), 2000);
+            socket.setSoTimeout(5000);
             var out = new BufferedOutputStream(socket.getOutputStream());
             var in = new BufferedInputStream(socket.getInputStream());
 
@@ -82,29 +87,16 @@ class IntegrationSmokeTest {
             hello.setClientId(UUID.randomUUID().toString());
             ProtocolCodec.writeFrame(out, hello);
 
-            Message welcome = ProtocolCodec.readFrame(in);
-            assertNotNull(welcome);
-            assertEquals(MessageType.WELCOME, welcome.getType());
+            Message welcome = awaitType(in, MessageType.WELCOME, 3000);
             assertNotNull(welcome.getPlayerId());
-
-            // ROOM_LIST may arrive after WELCOME
-            Message maybeList = ProtocolCodec.readFrame(in);
-            assertNotNull(maybeList);
+            assertNotNull(welcome.getSessionToken());
 
             Message create = Message.of(MessageType.CREATE_ROOM);
             create.setRoomName("Integration Room");
             create.setMaxPlayers(4);
             ProtocolCodec.writeFrame(out, create);
 
-            Message created = null;
-            for (int i = 0; i < 5; i++) {
-                Message next = ProtocolCodec.readFrame(in);
-                if (next != null && next.getType() == MessageType.ROOM_CREATED) {
-                    created = next;
-                    break;
-                }
-            }
-            assertNotNull(created);
+            Message created = awaitType(in, MessageType.ROOM_CREATED, 3000);
             assertTrue(created.getRoomId().startsWith("r-"));
         }
 
@@ -117,5 +109,16 @@ class IntegrationSmokeTest {
                 HttpResponse.BodyHandlers.ofString());
         assertEquals(200, response.statusCode());
         assertTrue(response.body().startsWith("["));
+    }
+
+    private static Message awaitType(BufferedInputStream in, MessageType type, long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            Message msg = ProtocolCodec.readFrame(in);
+            if (msg != null && msg.getType() == type) {
+                return msg;
+            }
+        }
+        throw new AssertionError("Did not receive " + type);
     }
 }

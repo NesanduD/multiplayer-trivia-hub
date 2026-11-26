@@ -67,15 +67,16 @@ public class WebSocketGameServer implements AutoCloseable, Runnable {
                 return;
             }
             WebSocketSession active = session;
+            roomManager.trackTransport(session);
             session.setHandler(new WebSocketSession.MessageHandler() {
                 @Override
                 public void onMessage(WebSocketSession s, Message message) {
-                    roomManager.handle(s, message);
+                    roomManager.dispatch(s, message);
                 }
 
                 @Override
                 public void onDisconnect(WebSocketSession s, String reason) {
-                    roomManager.handleDisconnect(s, reason);
+                    roomManager.dispatchDisconnect(s, reason);
                 }
             });
             LOG.info(() -> "WebSocket client connected from " + socket.getRemoteSocketAddress());
@@ -83,7 +84,7 @@ public class WebSocketGameServer implements AutoCloseable, Runnable {
         } catch (Exception ex) {
             LOG.log(Level.WARNING, "WebSocket client error", ex);
             if (session != null) {
-                roomManager.handleDisconnect(session, "ERROR");
+                roomManager.dispatchDisconnect(session, "ERROR");
             }
         }
     }

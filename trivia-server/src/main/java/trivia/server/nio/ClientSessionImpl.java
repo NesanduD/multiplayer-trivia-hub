@@ -23,6 +23,8 @@ public class ClientSessionImpl implements ClientSession {
     private final NioFrameBuffer frameBuffer = new NioFrameBuffer();
     private final Queue<ByteBuffer> pendingWrites = new ArrayDeque<>();
     private final AtomicBoolean open = new AtomicBoolean(true);
+    private final AtomicBoolean disconnectNotified = new AtomicBoolean(false);
+    private volatile long lastHeartbeatMs = System.currentTimeMillis();
 
     private String playerId;
     private String playerName;
@@ -33,6 +35,17 @@ public class ClientSessionImpl implements ClientSession {
         this.key = key;
     }
 
+    @Override
+    public void touchHeartbeat() {
+        lastHeartbeatMs = System.currentTimeMillis();
+    }
+
+    @Override
+    public long getLastHeartbeatMs() {
+        return lastHeartbeatMs;
+    }
+
+    @Override
     public String getConnectionId() {
         return connectionId;
     }
@@ -100,6 +113,11 @@ public class ClientSessionImpl implements ClientSession {
     @Override
     public boolean isOpen() {
         return open.get() && channel.isOpen();
+    }
+
+    /** Returns true only the first time disconnect handling should run. */
+    public boolean markDisconnectNotified() {
+        return disconnectNotified.compareAndSet(false, true);
     }
 
     @Override

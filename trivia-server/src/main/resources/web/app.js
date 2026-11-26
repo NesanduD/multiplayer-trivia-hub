@@ -58,6 +58,8 @@
   let serverInfo = null;
   let playerId = null;
   let playerName = null;
+  let sessionToken = sessionStorage.getItem("triviaSessionToken") || null;
+  let heartbeatIntervalMs = 5000;
   let currentRoomId = null;
   let currentQIndex = -1;
   let selectedOption = null;
@@ -67,6 +69,8 @@
   let timerHandle = null;
   let pingHandle = null;
   let roomRefreshHandle = null;
+  let intentionalClose = false;
+  let resumeAttempts = 0;
   const protocolLines = [];
 
   function toast(text, bad = false) {
@@ -164,6 +168,10 @@
     return true;
   }
 
+  function isPlayerConnected() {
+    return !!(ws && ws.readyState === WebSocket.OPEN && playerId);
+  }
+
   async function loadServerInfo() {
     try {
       const res = await fetch("/api/server-info");
@@ -176,9 +184,16 @@
       if (els.heroMeta) {
         els.heroMeta.textContent = `${serverInfo.players} players · ${serverInfo.rooms} rooms`;
       }
+      // Header pill = player session, not HTTP. Show Ready until Play now connects.
+      if (!isPlayerConnected()) {
+        setStatus("Ready", "ok");
+      }
       renderServiceMap();
     } catch (_) {
       if (els.heroStatus) els.heroStatus.textContent = "Server offline";
+      if (!isPlayerConnected()) {
+        setStatus("Server offline", "offline");
+      }
     }
   }
 
@@ -271,10 +286,12 @@
     } catch (_) {}
   }
 
-  function connect() {
-    const name = els.playerName.value.trim() || "Player";
+  function connect(opts = {}) {
+    const resume = !!opts.resume && !!sessionToken;
+    const name = els.playerName.value.trim() || playerName || "Player";
     playerName = name;
-    setStatus("Connecting…", "subtle");
+    intentionalClose = false;
+    setStatus(resume ? "Reconnecting…" : "Connecting…", "subtle");
     setStep(2);
     ws = new WebSocket(wsUrl);
     ws.onopen = () => {
@@ -282,11 +299,17 @@
       els.connectBtn.disabled = true;
       setLobbyActions(true);
       els.rttPill.classList.remove("hidden");
-      send({ type: "HELLO", playerName: name, clientId: crypto.randomUUID() });
+      if (resume) {
+        send({ type: "RESUME", sessionToken, clientId: crypto.randomUUID() });
+      } else {
+        send({ type: "HELLO", playerName: name, clientId: crypto.randomUUID() });
+      }
       startPingLoop();
       startRoomRefresh();
-      showLobbyScreen();
-      toast(`Welcome, ${name}!`);
+      if (!resume) {
+        showLobbyScreen();
+        toast(`Welcome, ${name}!`);
+      }
     };
     ws.onmessage = (ev) => {
       try {
@@ -300,27 +323,50 @@
     ws.onclose = () => {
       stopPingLoop();
       stopRoomRefresh();
-      setStatus("Offline", "offline");
       els.connectBtn.disabled = false;
       setLobbyActions(false);
       els.rttPill.classList.add("hidden");
       playerId = null;
-      currentRoomId = null;
-      showWelcome();
-      setStep(1);
+      if (!intentionalClose && sessionToken && resumeAttempts < 3) {
+        setStatus("Reconnecting…", "subtle");
+        resumeAttempts += 1;
+        toast("Connection lost — trying to resume…");
+        setTimeout(() => connect({ resume: true }), 800 * resumeAttempts);
+        return;
+      }
+      if (intentionalClose) {
+        sessionToken = null;
+        sessionStorage.removeItem("triviaSessionToken");
+        currentRoomId = null;
+        showWelcome();
+        setStep(1);
+        loadServerInfo(); // back to Ready / Server offline
+      } else {
+        setStatus("Disconnected", "offline");
+        loadServerInfo();
+      }
     };
-    ws.onerror = () => toast("Could not connect. Is the server running?", true);
+    ws.onerror = () => {
+      if (!sessionToken) toast("Could not connect. Is the server running?", true);
+    };
   }
 
   function disconnect() {
-    if (ws) ws.close();
+    intentionalClose = true;
+    resumeAttempts = 0;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      send({ type: "GOODBYE" });
+      ws.close();
+    } else if (ws) {
+      ws.close();
+    }
   }
 
   function startPingLoop() {
     stopPingLoop();
     const beat = () => send({ type: "PING", serverTime: Date.now() });
     beat();
-    pingHandle = setInterval(beat, 5000);
+    pingHandle = setInterval(beat, Math.max(500, heartbeatIntervalMs));
   }
   function stopPingLoop() {
     if (pingHandle) clearInterval(pingHandle);
@@ -343,10 +389,31 @@
       case "WELCOME":
         playerId = msg.playerId;
         playerName = msg.playerName || playerName;
+        sessionToken = msg.sessionToken || (msg.extra && msg.extra.sessionToken) || sessionToken;
+        if (sessionToken) sessionStorage.setItem("triviaSessionToken", sessionToken);
+        if (msg.extra && msg.extra.heartbeatIntervalMs) {
+          heartbeatIntervalMs = Number(msg.extra.heartbeatIntervalMs) || heartbeatIntervalMs;
+          startPingLoop();
+        }
+        resumeAttempts = 0;
         setStatus(playerName, "ok");
-        setStep(3);
+        if (msg.roomId) {
+          currentRoomId = msg.roomId;
+          setStep(4);
+        } else {
+          setStep(3);
+          showLobbyScreen();
+        }
+        if (msg.extra && msg.extra.resumed) toast("Session restored");
         loadPlayers();
         refreshRooms();
+        break;
+      case "ERROR":
+        if (String(msg.error || "").toLowerCase().includes("token")) {
+          sessionToken = null;
+          sessionStorage.removeItem("triviaSessionToken");
+        }
+        toast(msg.error || "Something went wrong", true);
         break;
       case "PONG": {
         const sent = msg.extra && msg.extra.clientTime ? Number(msg.extra.clientTime) : null;
@@ -393,9 +460,6 @@
         break;
       case "PLAYER_LEFT":
         appendChat("System", `${msg.from || "Someone"} left`, true);
-        break;
-      case "ERROR":
-        toast(msg.error || "Something went wrong", true);
         break;
       default:
         break;

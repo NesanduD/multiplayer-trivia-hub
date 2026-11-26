@@ -19,7 +19,7 @@ import java.util.logging.Logger;
 
 /**
  * Central non-blocking TCP game server (Member 04).
- * One selector thread monitors many SocketChannels.
+ * Selector thread only accepts/reads/writes; game logic is dispatched per connection.
  */
 public class NioGameServer implements AutoCloseable {
     private static final Logger LOG = Logger.getLogger(NioGameServer.class.getName());
@@ -86,6 +86,7 @@ public class NioGameServer implements AutoCloseable {
         ClientSessionImpl session = new ClientSessionImpl(client, clientKey);
         clientKey.attach(session);
         sessions.put(client, session);
+        roomManager.trackTransport(session);
         String remote = String.valueOf(client.getRemoteAddress());
         LOG.info(() -> "Accepted connection from " + remote + " (sessions=" + sessions.size() + ")");
     }
@@ -115,7 +116,8 @@ public class NioGameServer implements AutoCloseable {
 
         for (Message message : messages) {
             LOG.fine(() -> "RX " + message.getType() + " from " + session.getPlayerName());
-            roomManager.handle(session, message);
+            // Keep selector free: ordered dispatch per connection
+            roomManager.dispatch(session, message);
         }
     }
 
@@ -125,8 +127,11 @@ public class NioGameServer implements AutoCloseable {
     }
 
     private void disconnect(ClientSessionImpl session, String reason) {
+        if (!session.markDisconnectNotified()) {
+            return;
+        }
         sessions.remove(session.getChannel());
-        roomManager.handleDisconnect(session, reason);
+        roomManager.dispatchDisconnect(session, reason);
         LOG.info(() -> "Client disconnected (" + reason + "): " + session.getPlayerName());
     }
 

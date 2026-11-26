@@ -7,6 +7,7 @@ public enum MessageType {
     // Connection
     HELLO,
     WELCOME,
+    RESUME,
     GOODBYE,
     ERROR,
     PING,

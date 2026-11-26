@@ -1,15 +1,16 @@
 # Practical Theory Demonstrations (Viva)
 
-## Member 01 — TCP Sockets (`Lecture 02`)
+## Member 01 — TCP Sockets (`Lecture 02`) + recovery
 
 1. Start server and client; click **Connect**.
 2. Open Wireshark on loopback / LAN filter `tcp.port == 5000`.
 3. Show three-way handshake (SYN / SYN-ACK / ACK).
 4. Create a room and send chat — ordered framed JSON over the stream.
-5. Click **Disconnect** / close client — show FIN and server log `PLAYER_LEFT` / disconnect.
-6. Force-kill a client process mid-game — server removes the player without crashing.
+5. Click **Disconnect** (sends `GOODBYE`) — intentional leave, no resume.
+6. Force-kill / drop mid-game without goodbye — soft-disconnect; `RESUME` with `sessionToken` restores seat (`GameTcpClient.resume` / browser auto-resume).
+7. Show client heartbeat `PING` frames while idle.
 
-**Explain:** connection-oriented reliable byte stream; `Socket` / streams; lifecycle and exceptions.
+**Explain:** connection-oriented reliable byte stream; app-level session vs TCP connection; why tokens beat name-only reclaim.
 
 ## Member 02 — UDP + Multicast + Addressing
 
@@ -21,22 +22,24 @@
 
 **Explain:** `DatagramSocket` / `MulticastSocket`, Class D addresses, ports, `InetAddress`.
 
-## Member 03 — Multithreading & Concurrency
+## Member 03 — Multithreading & Concurrency + sessions
 
 1. Create two rooms with different clients; start both games.
-2. Point to logs: `room-worker` / `question-timer` thread names.
+2. Point to logs: `room-worker` / `question-timer` / `session-dispatch` thread names.
 3. Run `ScoreBoardTest` — concurrent increments remain correct via `synchronized`.
 4. Let a question timer expire unanswered — `Future` timeout advances the round.
+5. Demo soft-disconnect + recover window expiry (`HeartbeatAndResumeTest` or live drop).
 
-**Explain:** thread pools, race conditions, `ExecutorService`, `Callable`/`Future`.
+**Explain:** thread pools, race conditions, session registry vs transport, `ExecutorService`.
 
-## Member 04 — Java NIO
+## Member 04 — Java NIO + dispatch
 
 1. Connect several clients while watching a single selector loop in `NioGameServer`.
 2. Show `NioFrameBuffer` / `ProtocolCodec.drainFrames` using `flip()` + `compact()`.
-3. Explain: one thread monitors many `SocketChannel`s vs one-thread-per-client blocking I/O.
+3. Explain: selector only accepts/reads/writes; `SessionDispatcher` runs `RoomManager` work FIFO per connection.
+4. Show idle timeout path: half-open TCP vs app heartbeat (`HeartbeatMonitor`).
 
-**Explain:** Channels, Buffers, Selectors, non-blocking accept/read/write.
+**Explain:** Channels, Buffers, Selectors; why game logic must leave the selector thread.
 
 ## Member 05 — HTTP & Web Services
 

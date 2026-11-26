@@ -7,6 +7,8 @@ import trivia.shared.protocol.Message;
  * Implemented by NIO TCP and WebSocket bridges.
  */
 public interface ClientSession {
+    String getConnectionId();
+
     String getPlayerId();
 
     String getPlayerName();
@@ -24,4 +26,9 @@ public interface ClientSession {
     boolean isOpen();
 
     void close();
+
+    /** Mark application-level activity (PING or any inbound message). */
+    void touchHeartbeat();
+
+    long getLastHeartbeatMs();
 }

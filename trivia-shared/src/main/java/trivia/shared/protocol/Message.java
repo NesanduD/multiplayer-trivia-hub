@@ -13,6 +13,8 @@ public class Message {
     private MessageType type;
     private String playerName;
     private String clientId;
+    /** Opaque resume token (sent once on WELCOME; presented on RESUME). Never logged. */
+    private String sessionToken;
     private String playerId;
     private String roomId;
     private String roomName;
@@ -73,6 +75,14 @@ public class Message {
 
     public void setClientId(String clientId) {
         this.clientId = clientId;
+    }
+
+    public String getSessionToken() {
+        return sessionToken;
+    }
+
+    public void setSessionToken(String sessionToken) {
+        this.sessionToken = sessionToken;
     }
 
     public String getPlayerId() {

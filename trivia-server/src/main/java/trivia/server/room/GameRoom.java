@@ -34,11 +34,15 @@ public class GameRoom {
     private final int maxPlayers;
     private final String hostPlayerId;
     private final Map<String, ClientSession> players = new ConcurrentHashMap<>();
+    private final Map<String, Boolean> softDisconnected = new ConcurrentHashMap<>();
     private final ScoreBoard scoreBoard = new ScoreBoard();
     private final QuestionBank questionBank;
     private final ExecutorService roomExecutor;
     private final QuestionTimer questionTimer;
     private final MatchStatsPublisher statsPublisher;
+    private final int questionSeconds;
+    private final int questionsPerMatch;
+    private final int pointsPerCorrect;
     private final Object lock = new Object();
 
     private volatile String status = "WAITING";
@@ -57,6 +61,21 @@ public class GameRoom {
                     ExecutorService roomExecutor,
                     ScheduledExecutorService scheduler,
                     MatchStatsPublisher statsPublisher) {
+        this(roomId, roomName, maxPlayers, hostPlayerId, questionBank, roomExecutor, scheduler,
+                statsPublisher, QUESTION_SECONDS, QUESTIONS_PER_MATCH, POINTS_PER_CORRECT);
+    }
+
+    public GameRoom(String roomId,
+                    String roomName,
+                    int maxPlayers,
+                    String hostPlayerId,
+                    QuestionBank questionBank,
+                    ExecutorService roomExecutor,
+                    ScheduledExecutorService scheduler,
+                    MatchStatsPublisher statsPublisher,
+                    int questionSeconds,
+                    int questionsPerMatch,
+                    int pointsPerCorrect) {
         this.roomId = roomId;
         this.roomName = roomName;
         this.maxPlayers = maxPlayers;
@@ -65,6 +84,9 @@ public class GameRoom {
         this.roomExecutor = roomExecutor;
         this.questionTimer = new QuestionTimer(scheduler);
         this.statsPublisher = statsPublisher;
+        this.questionSeconds = questionSeconds;
+        this.questionsPerMatch = questionsPerMatch;
+        this.pointsPerCorrect = pointsPerCorrect;
     }
 
     public String getRoomId() {
@@ -122,9 +144,70 @@ public class GameRoom {
         }
     }
 
+    /**
+     * Keep seat, scores, and answer locks while the transport is down (recoverable).
+     */
+    public void softDisconnect(String playerId, String reason) {
+        synchronized (lock) {
+            ClientSession session = players.get(playerId);
+            if (session == null || softDisconnected.containsKey(playerId)) {
+                return;
+            }
+            softDisconnected.put(playerId, Boolean.TRUE);
+            String name = session.getPlayerName() == null ? playerId : session.getPlayerName();
+            Message left = Message.of(MessageType.PLAYER_LEFT);
+            left.setPlayerId(playerId);
+            left.setFrom(name);
+            left.setReason(reason == null ? "DISCONNECTED" : reason);
+            left.setRoomId(roomId);
+            left.setExtra(Map.of("recoverable", true));
+            broadcast(left);
+            Message chat = Message.of(MessageType.CHAT);
+            chat.setRoomId(roomId);
+            chat.setFrom("System");
+            chat.setText(name + " disconnected — may reconnect");
+            broadcast(chat);
+            broadcastRoomState();
+        }
+    }
+
+    /**
+     * Re-attach a resumed transport to an existing seat without resetting scores/answers.
+     */
+    public void rebindPlayer(ClientSession session) {
+        synchronized (lock) {
+            String playerId = session.getPlayerId();
+            if (playerId == null || !players.containsKey(playerId)) {
+                throw new IllegalStateException("No recoverable seat in this room");
+            }
+            players.put(playerId, session);
+            softDisconnected.remove(playerId);
+            session.setRoomId(roomId);
+            Message chat = Message.of(MessageType.CHAT);
+            chat.setRoomId(roomId);
+            chat.setFrom("System");
+            chat.setText(session.getPlayerName() + " reconnected");
+            broadcast(chat);
+            session.send(roomStateMessage());
+            session.send(scoreUpdateMessage());
+            if ("PLAYING".equals(status) && currentIndex >= 0 && currentIndex < matchQuestions.size()) {
+                Question question = matchQuestions.get(currentIndex);
+                Message q = Message.of(MessageType.QUESTION);
+                q.setRoomId(roomId);
+                q.setQIndex(currentIndex);
+                q.setText(question.getText());
+                q.setOptions(question.getOptions());
+                q.setEndsAt(endsAt);
+                session.send(q);
+            }
+            broadcastRoomState();
+        }
+    }
+
     public void removePlayer(String playerId, String reason) {
         synchronized (lock) {
             ClientSession removed = players.remove(playerId);
+            softDisconnected.remove(playerId);
             if (removed == null) {
                 return;
             }
@@ -166,7 +249,7 @@ public class GameRoom {
                 sendError(requesterId, "Need at least one player");
                 return;
             }
-            matchQuestions = questionBank.pick(QUESTIONS_PER_MATCH);
+            matchQuestions = questionBank.pick(questionsPerMatch);
             currentIndex = -1;
             status = "PLAYING";
             running.set(true);
@@ -178,6 +261,9 @@ public class GameRoom {
     public void handleAnswer(ClientSession session, Message message) {
         synchronized (lock) {
             if (!"PLAYING".equals(status)) {
+                return;
+            }
+            if (softDisconnected.containsKey(session.getPlayerId())) {
                 return;
             }
             if (message.getQIndex() == null || message.getQIndex() != currentIndex) {
@@ -193,7 +279,7 @@ public class GameRoom {
             boolean correct = option == question.getCorrectIndex();
             int points = 0;
             if (correct) {
-                points = POINTS_PER_CORRECT;
+                points = pointsPerCorrect;
                 scoreBoard.addPoints(session.getPlayerId(), points);
             }
 
@@ -274,7 +360,7 @@ public class GameRoom {
             }
             answersThisRound.clear();
             Question question = matchQuestions.get(currentIndex);
-            endsAt = System.currentTimeMillis() + QUESTION_SECONDS * 1000L;
+            endsAt = System.currentTimeMillis() + questionSeconds * 1000L;
 
             Message q = Message.of(MessageType.QUESTION);
             q.setRoomId(roomId);
@@ -286,7 +372,7 @@ public class GameRoom {
             broadcastScores();
 
             final int expectedIndex = currentIndex;
-            timeoutFuture = questionTimer.scheduleTimeout(QUESTION_SECONDS * 1000L, () -> {
+            timeoutFuture = questionTimer.scheduleTimeout(questionSeconds * 1000L, () -> {
                 synchronized (lock) {
                     if (expectedIndex == currentIndex && "PLAYING".equals(status)) {
                         LOG.info(() -> "Question timeout in room " + roomId + " q=" + expectedIndex);
@@ -346,15 +432,25 @@ public class GameRoom {
     }
 
     private void broadcastScores() {
+        broadcast(scoreUpdateMessage());
+    }
+
+    private Message scoreUpdateMessage() {
         Message scores = Message.of(MessageType.SCORE_UPDATE);
         scores.setRoomId(roomId);
         scores.setScores(scoreBoard.asMaps());
-        broadcast(scores);
+        return scores;
     }
 
     private void broadcast(Message message) {
-        for (ClientSession session : players.values()) {
-            session.send(message);
+        for (Map.Entry<String, ClientSession> entry : players.entrySet()) {
+            if (softDisconnected.containsKey(entry.getKey())) {
+                continue;
+            }
+            ClientSession session = entry.getValue();
+            if (session != null && session.isOpen()) {
+                session.send(message);
+            }
         }
     }
 

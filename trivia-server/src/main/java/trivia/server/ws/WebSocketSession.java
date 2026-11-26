@@ -31,6 +31,7 @@ public class WebSocketSession implements ClientSession, Runnable {
     private final OutputStream out;
     private final AtomicBoolean open = new AtomicBoolean(true);
     private final String connectionId = UUID.randomUUID().toString();
+    private volatile long lastHeartbeatMs = System.currentTimeMillis();
 
     private String playerId;
     private String playerName;
@@ -53,8 +54,19 @@ public class WebSocketSession implements ClientSession, Runnable {
         this.handler = handler;
     }
 
+    @Override
     public String getConnectionId() {
         return connectionId;
+    }
+
+    @Override
+    public void touchHeartbeat() {
+        lastHeartbeatMs = System.currentTimeMillis();
+    }
+
+    @Override
+    public long getLastHeartbeatMs() {
+        return lastHeartbeatMs;
     }
 
     public boolean performHandshake() throws IOException {
