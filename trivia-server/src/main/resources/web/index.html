@@ -126,6 +126,19 @@
           </div>
         </div>
 
+        <div id="resultsOverlay" class="results-overlay hidden" role="dialog" aria-labelledby="resultsTitle" aria-modal="true">
+          <div class="results-card animate-in">
+            <p class="kicker">Round complete</p>
+            <h2 id="resultsTitle">Winner</h2>
+            <p id="resultsSubtitle" class="results-sub"></p>
+            <ol id="resultsBoard" class="results-board"></ol>
+            <div class="results-actions">
+              <button id="resultsPlayAgainBtn" class="btn btn-primary btn-lg">Play again</button>
+              <button id="resultsCloseBtn" class="btn btn-ghost">Back to room</button>
+            </div>
+          </div>
+        </div>
+
         <div class="game-layout">
           <div class="question-stage panel animate-in delay-1">
             <p class="kicker" id="questionMeta">Waiting for host to start</p>

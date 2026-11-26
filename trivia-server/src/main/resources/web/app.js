@@ -50,6 +50,12 @@
     liveBadge: $("liveBadge"),
     steps: $("steps"),
     fxHost: $("fxHost"),
+    resultsOverlay: $("resultsOverlay"),
+    resultsTitle: $("resultsTitle"),
+    resultsSubtitle: $("resultsSubtitle"),
+    resultsBoard: $("resultsBoard"),
+    resultsPlayAgainBtn: $("resultsPlayAgainBtn"),
+    resultsCloseBtn: $("resultsCloseBtn"),
   };
 
   const RING = 97.4;
@@ -436,6 +442,7 @@
         setStep(4);
         break;
       case "QUESTION":
+        hideResults();
         showQuestion(msg);
         break;
       case "ANSWER_RESULT":
@@ -445,15 +452,7 @@
         renderScores(msg.scores || []);
         break;
       case "GAME_OVER":
-        renderScores(msg.scores || []);
-        els.answerFeedback.textContent = "Round over!";
-        els.answerFeedback.className = "feedback ok";
-        lockOptions();
-        els.startBtn.disabled = false;
-        els.questionMeta.textContent = "Nice game — start again anytime";
-        celebrate();
-        loadStats();
-        toast("Game over");
+        showRoundResults(msg.scores || []);
         break;
       case "CHAT":
         appendChat(msg.from, msg.text, msg.from === "System");
@@ -533,14 +532,38 @@
     });
   }
 
+  function setGameActionButton(mode) {
+    // waiting | playing | finished
+    els.startBtn.classList.remove("btn-primary", "btn-ongoing", "is-ongoing");
+    if (mode === "playing") {
+      els.startBtn.textContent = "Game on";
+      els.startBtn.disabled = true;
+      els.startBtn.classList.add("btn-ongoing", "is-ongoing");
+      els.startBtn.setAttribute("aria-live", "polite");
+      return;
+    }
+    if (mode === "finished") {
+      els.startBtn.textContent = "Play again";
+      els.startBtn.disabled = false;
+      els.startBtn.classList.add("btn-primary");
+      return;
+    }
+    els.startBtn.textContent = "Start";
+    els.startBtn.disabled = false;
+    els.startBtn.classList.add("btn-primary");
+  }
+
   function showGame(state) {
     showGameScreen();
     els.roomTitle.textContent = state.roomName || "Room";
     els.roomCodeLabel.textContent = state.roomId || currentRoomId || "—";
     const count = (state.players || []).length;
+    const playing = state.status === "PLAYING";
     els.roomStatus.textContent =
-      state.status === "WAITING" ? `Waiting · ${count} player${count === 1 ? "" : "s"}` : `Playing · ${count} player${count === 1 ? "" : "s"}`;
-    els.startBtn.disabled = state.status !== "WAITING";
+      state.status === "WAITING"
+        ? `Waiting · ${count} player${count === 1 ? "" : "s"}`
+        : `Game on · ${count} player${count === 1 ? "" : "s"}`;
+    setGameActionButton(playing ? "playing" : state.status === "FINISHED" ? "finished" : "waiting");
     els.playerChips.innerHTML = "";
     (state.players || []).forEach((name) => {
       const chip = document.createElement("span");
@@ -581,7 +604,7 @@
     els.questionText.classList.add("animate-in");
     els.answerFeedback.textContent = "Tap an answer to lock it in";
     els.answerFeedback.className = "feedback";
-    els.startBtn.disabled = true;
+    setGameActionButton("playing");
     els.options.innerHTML = "";
     (msg.options || []).forEach((opt, i) => {
       const btn = document.createElement("button");
@@ -616,14 +639,80 @@
     if (remaining === 0) lockOptions();
   }
 
+  function rankedScores(scores) {
+    return [...(scores || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
+  }
+
   function renderScores(scores) {
+    const ranked = rankedScores(scores);
     els.scoreList.innerHTML = "";
-    scores.forEach((s, idx) => {
+    ranked.forEach((s, idx) => {
       const li = document.createElement("li");
+      if (idx === 0) li.classList.add("leader");
       li.appendChild(avatar(s.playerName));
       li.appendChild(document.createTextNode(` ${idx + 1}. ${s.playerName} · ${s.score}`));
       els.scoreList.appendChild(li);
     });
+  }
+
+  function hideResults() {
+    if (els.resultsOverlay) els.resultsOverlay.classList.add("hidden");
+  }
+
+  function showRoundResults(scores) {
+    const ranked = rankedScores(scores);
+    renderScores(ranked);
+    lockOptions();
+    setGameActionButton("finished");
+    els.questionMeta.textContent = "Round complete";
+    els.questionText.textContent = "Final standings";
+    els.options.innerHTML = "";
+    els.answerFeedback.textContent = "";
+    els.answerFeedback.className = "feedback";
+    els.timerText.textContent = "✓";
+
+    const top = ranked[0];
+    const topScore = top ? Number(top.score) || 0 : 0;
+    const winners = ranked.filter((s) => (Number(s.score) || 0) === topScore);
+    if (!top) {
+      els.resultsTitle.textContent = "No scores";
+      els.resultsSubtitle.textContent = "Play another round when you’re ready.";
+    } else if (winners.length > 1) {
+      els.resultsTitle.textContent = "It's a tie!";
+      els.resultsSubtitle.textContent = winners.map((w) => w.playerName).join(" & ")
+        + ` · ${topScore} pts`;
+    } else {
+      const youWon = playerName && top.playerName === playerName;
+      els.resultsTitle.textContent = youWon ? "You win!" : `${top.playerName} wins!`;
+      els.resultsSubtitle.textContent = `${topScore} points`;
+    }
+
+    els.resultsBoard.innerHTML = "";
+    ranked.forEach((s, idx) => {
+      const li = document.createElement("li");
+      if (idx === 0 || (winners && winners.some((w) => w.playerName === s.playerName) && (Number(s.score) || 0) === topScore)) {
+        li.classList.add("winner");
+      }
+      const rank = document.createElement("span");
+      rank.className = "results-rank";
+      rank.textContent = idx === 0 ? "★" : String(idx + 1);
+      const name = document.createElement("span");
+      name.className = "results-name";
+      name.textContent = s.playerName || "Player";
+      const pts = document.createElement("span");
+      pts.className = "results-score";
+      pts.textContent = `${s.score ?? 0}`;
+      li.appendChild(rank);
+      li.appendChild(avatar(s.playerName));
+      li.appendChild(name);
+      li.appendChild(pts);
+      els.resultsBoard.appendChild(li);
+    });
+
+    els.resultsOverlay.classList.remove("hidden");
+    celebrate();
+    loadStats();
+    toast(top ? `${els.resultsTitle.textContent}` : "Round over");
   }
 
   function joinByCode() {
@@ -663,8 +752,17 @@
     }
     send({ type: "PING", serverTime: Date.now() });
   };
-  els.startBtn.onclick = () => send({ type: "START_GAME", roomId: currentRoomId });
+  els.startBtn.onclick = () => {
+    hideResults();
+    send({ type: "START_GAME", roomId: currentRoomId });
+  };
+  els.resultsPlayAgainBtn.onclick = () => {
+    hideResults();
+    send({ type: "START_GAME", roomId: currentRoomId });
+  };
+  els.resultsCloseBtn.onclick = () => hideResults();
   els.leaveBtn.onclick = () => {
+    hideResults();
     send({ type: "LEAVE_ROOM" });
     els.chatLog.innerHTML = "";
     showLobbyScreen();
