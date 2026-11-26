@@ -9,6 +9,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.MulticastSocket;
 import java.net.NetworkInterface;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -23,13 +24,17 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Joins the UDP multicast group and listens for SERVER_ANNOUNCE beacons (Member 02).
+ * Joins the UDP multicast group and listens for SERVER_ANNOUNCE beacons (Member 04).
  * Discovery is best-effort: failure to join multicast must not block the UI.
  */
 public class ServerDiscoveryListener implements AutoCloseable, Runnable {
     private static final Logger LOG = Logger.getLogger(ServerDiscoveryListener.class.getName());
-    private static final long STALE_MS = 6000;
+    private static final long DEFAULT_STALE_MS = 6000;
+    private static final int RECEIVE_TIMEOUT_MS = 2000;
 
+    private final String multicastGroup;
+    private final int multicastPort;
+    private final long staleMs;
     private final Map<String, DiscoveryMessage> servers = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<Consumer<List<DiscoveryMessage>>> listeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -38,7 +43,17 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
     private MulticastSocket socket;
     private InetAddress group;
     private Thread thread;
-    private boolean active;
+    private volatile boolean active;
+
+    public ServerDiscoveryListener() {
+        this(DiscoveryMessage.MULTICAST_GROUP, DiscoveryMessage.MULTICAST_PORT, DEFAULT_STALE_MS);
+    }
+
+    public ServerDiscoveryListener(String multicastGroup, int multicastPort, long staleMs) {
+        this.multicastGroup = multicastGroup;
+        this.multicastPort = multicastPort;
+        this.staleMs = Math.max(500L, staleMs);
+    }
 
     public void addListener(Consumer<List<DiscoveryMessage>> listener) {
         listeners.add(listener);
@@ -50,9 +65,10 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
 
     public void start() {
         try {
-            group = InetAddress.getByName(DiscoveryMessage.MULTICAST_GROUP);
-            socket = new MulticastSocket(DiscoveryMessage.MULTICAST_PORT);
+            group = InetAddress.getByName(multicastGroup);
+            socket = new MulticastSocket(multicastPort);
             socket.setReuseAddress(true);
+            socket.setSoTimeout(RECEIVE_TIMEOUT_MS);
             boolean joined = joinAllInterfaces();
             if (!joined) {
                 LOG.warning("Could not join multicast group on any interface. "
@@ -67,7 +83,7 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
             thread.setDaemon(true);
             thread.start();
             LOG.info(() -> "Listening for UDP discovery on "
-                    + DiscoveryMessage.MULTICAST_GROUP + ":" + DiscoveryMessage.MULTICAST_PORT);
+                    + multicastGroup + ":" + multicastPort);
         } catch (Exception ex) {
             LOG.log(Level.WARNING, "UDP discovery unavailable; connect manually via host/port", ex);
             closeSocketQuietly();
@@ -76,16 +92,26 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
     }
 
     private boolean joinAllInterfaces() {
+        boolean joined = joinMatchingInterfaces(false);
+        if (!joined) {
+            // Fallback to loopback interface for offline/single-host testing
+            joined = joinMatchingInterfaces(true);
+        }
+        return joined;
+    }
+
+    private boolean joinMatchingInterfaces(boolean includeLoopback) {
         boolean joined = false;
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces.hasMoreElements()) {
                 NetworkInterface nif = interfaces.nextElement();
                 try {
-                    if (!nif.isUp() || nif.isLoopback() || !nif.supportsMulticast() || !hasIpv4(nif)) {
+                    if (!nif.isUp() || (!includeLoopback && nif.isLoopback())
+                            || !nif.supportsMulticast() || !hasIpv4(nif)) {
                         continue;
                     }
-                    socket.joinGroup(new InetSocketAddress(group, DiscoveryMessage.MULTICAST_PORT), nif);
+                    socket.joinGroup(new InetSocketAddress(group, multicastPort), nif);
                     joinedInterfaces.add(nif);
                     joined = true;
                     LOG.info(() -> "Joined multicast on interface " + nif.getName());
@@ -117,13 +143,9 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
                 DatagramPacket packet = new DatagramPacket(buf, buf.length);
                 socket.receive(packet);
                 String json = new String(packet.getData(), packet.getOffset(), packet.getLength(), StandardCharsets.UTF_8);
-                DiscoveryMessage message = DiscoveryMessage.fromJson(json);
-                if (message.getHost() == null || message.getHost().isBlank()) {
-                    message.setHost(packet.getAddress().getHostAddress());
-                }
-                message.setTimestamp(System.currentTimeMillis());
-                String key = message.getHost() + ":" + message.getTcpPort();
-                servers.put(key, message);
+                processAnnouncement(json, packet.getAddress());
+            } catch (SocketTimeoutException ex) {
+                // Periodic wakeup to evict stale servers even when no beacons arrive
                 pruneAndNotify();
             } catch (IllegalArgumentException ex) {
                 LOG.fine(() -> "Ignoring bad discovery datagram: " + ex.getMessage());
@@ -135,6 +157,26 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
         }
     }
 
+    /**
+     * Parses, validates, and records a discovery announcement payload.
+     */
+    public void processAnnouncement(String json, InetAddress senderAddress) {
+        DiscoveryMessage message = DiscoveryMessage.fromJson(json);
+        if (message.getTcpPort() <= 0 || message.getTcpPort() > 65535) {
+            throw new IllegalArgumentException("Invalid tcpPort in discovery message: " + message.getTcpPort());
+        }
+        if (message.getServerName() == null || message.getServerName().isBlank()) {
+            message.setServerName("Trivia-Server");
+        }
+        if (message.getHost() == null || message.getHost().isBlank()) {
+            message.setHost(senderAddress != null ? senderAddress.getHostAddress() : "127.0.0.1");
+        }
+        message.setTimestamp(System.currentTimeMillis());
+        String key = message.getHost() + ":" + message.getTcpPort();
+        servers.put(key, message);
+        pruneAndNotify();
+    }
+
     public List<DiscoveryMessage> currentServers() {
         pruneAndNotify();
         List<DiscoveryMessage> list = new ArrayList<>(servers.values());
@@ -144,7 +186,7 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
 
     private void pruneAndNotify() {
         long now = System.currentTimeMillis();
-        servers.entrySet().removeIf(e -> now - e.getValue().getTimestamp() > STALE_MS);
+        servers.entrySet().removeIf(e -> now - e.getValue().getTimestamp() > staleMs);
         List<DiscoveryMessage> snapshot = new ArrayList<>(servers.values());
         snapshot.sort(Comparator.comparing(DiscoveryMessage::getServerName));
         for (Consumer<List<DiscoveryMessage>> listener : listeners) {
@@ -170,7 +212,7 @@ public class ServerDiscoveryListener implements AutoCloseable, Runnable {
         if (socket != null) {
             for (NetworkInterface nif : joinedInterfaces) {
                 try {
-                    socket.leaveGroup(new InetSocketAddress(group, DiscoveryMessage.MULTICAST_PORT), nif);
+                    socket.leaveGroup(new InetSocketAddress(group, multicastPort), nif);
                 } catch (Exception ignored) {
                     // ignore leave failures
                 }
