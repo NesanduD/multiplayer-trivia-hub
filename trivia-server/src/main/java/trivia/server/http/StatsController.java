@@ -1,5 +1,6 @@
 package trivia.server.http;
 
+import com.google.gson.JsonParseException;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import trivia.shared.dto.MatchResult;
@@ -10,6 +11,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 /**
  * REST-style request routing for match history and leaderboards (Member 05).
@@ -27,6 +29,20 @@ public class StatsController {
 
         if ("OPTIONS".equalsIgnoreCase(method)) {
             send(exchange, 204, "");
+            return;
+        }
+
+        if (!isKnownRoute(path)) {
+            sendError(exchange, 404, "Not found");
+            return;
+        }
+
+        boolean isGet = "GET".equalsIgnoreCase(method);
+        boolean isMatchPost = "POST".equalsIgnoreCase(method) && "/api/matches".equals(path);
+        if (!isGet && !isMatchPost) {
+            exchange.getResponseHeaders().set("Allow", "/api/matches".equals(path)
+                    ? "GET, POST, OPTIONS" : "GET, OPTIONS");
+            sendError(exchange, 405, "Method not allowed");
             return;
         }
 
@@ -58,7 +74,7 @@ public class StatsController {
             if ("POST".equalsIgnoreCase(method) && "/api/matches".equals(path)) {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 MatchResult result = ProtocolCodec.fromJson(body, MatchResult.class);
-                if (result == null || result.getMatchId() == null) {
+                if (result == null || result.getMatchId() == null || result.getMatchId().isBlank()) {
                     sendJson(exchange, 400, "{\"error\":\"Invalid match payload\"}");
                     return;
                 }
@@ -67,9 +83,22 @@ public class StatsController {
                 return;
             }
             sendJson(exchange, 404, "{\"error\":\"Not found\"}");
+        } catch (JsonParseException ex) {
+            sendError(exchange, 400, "Malformed JSON request body");
         } catch (Exception ex) {
-            sendJson(exchange, 500, "{\"error\":\"" + escape(ex.getMessage()) + "\"}");
+            sendError(exchange, 500, ex.getMessage() == null ? "Internal server error" : ex.getMessage());
         }
+    }
+
+    private static boolean isKnownRoute(String path) {
+        return "/api/leaderboard".equals(path)
+                || "/api/matches".equals(path)
+                || path.startsWith("/api/matches/")
+                || (path.startsWith("/api/players/") && path.endsWith("/history"));
+    }
+
+    private void sendError(HttpExchange exchange, int status, String message) throws IOException {
+        sendJson(exchange, status, ProtocolCodec.toJson(Map.of("error", message)));
     }
 
     private void sendJson(HttpExchange exchange, int status, String body) throws IOException {
@@ -97,12 +126,5 @@ public class StatsController {
         } else {
             exchange.close();
         }
-    }
-
-    private static String escape(String value) {
-        if (value == null) {
-            return "";
-        }
-        return value.replace("\"", "'");
     }
 }
